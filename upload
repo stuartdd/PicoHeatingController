@@ -1,0 +1,19 @@
+#!/bin/bash
+
+data-gen/target/debug/data-gen file:timedata_1.json 7:30 8:30 17 19 
+if [ $? -ne 0 ]
+then
+  echo "Upload failed"
+  exit 1
+fi
+
+curl --data-binary "@timedata_1.json" -H 'Content-Type: application/json' http://192.168.1.177/timedata1
+
+data-gen/target/debug/data-gen file:timedata_2.json 9 10 17 18 19 20
+if [ $? -ne 0 ]
+then
+  echo "Upload failed"
+  exit 1
+fi
+
+curl --data-binary "@timedata_2.json" -H 'Content-Type: application/json' http://192.168.1.177/timedata2
