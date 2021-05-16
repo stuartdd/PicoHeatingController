@@ -10,3 +10,4 @@ Pico Heating controller using arduino C
 
 # Optional
 * Rust compiled toolchain installed to generate time (schedule) test data.
+*    ./upload to generate data and upload to the device
