@@ -211,10 +211,15 @@ enum REQ_TYPE {
 REQ_TYPE requestType = RT_NOT_FOUND;
 
 enum SCREEN_MODE {
-  SM_STATUS, SM_CH1, SM_CH2, SM_OFF
+  SM_STATUS, SM_SUMMARY, SM_CH1, SM_CH2, SM_OFF
 };
-SCREEN_MODE screenMode = SM_STATUS;
-SCREEN_MODE restoreScreenMode = SM_STATUS;
+SCREEN_MODE screenMode = SM_SUMMARY;
+SCREEN_MODE restoreScreenMode = SM_SUMMARY;
+
+enum CHANNEL_MODE {
+  CM_SCHEDULED, CM_BOOST, CM_OFF, CM_ON
+};
+
 
 // Enter a MAC address and IP address for your controller below.
 // The IP address will be dependent on your local network:
@@ -223,6 +228,7 @@ struct TimeStoreStruct {
   char key[STORE_KEY_LEN];
   char tag[3];
   uint16_t list[TIME_STORE_SIZE];
+  uint16_t boost = 0;
   int count = 0;
   bool stateOn = false;
   char onOff[4];
@@ -337,19 +343,6 @@ void setup() {
   if (!getStoredTimeData(timeStoreC2)) {
     storeTimeData(timeStoreC2);
   }
-  
-//  for (int i = 0; i < TIME_STORE_SIZE; i++) {
-//    if (timeStoreC2.list[i] < TIME_STORE_UNSET) {
-//      Serial.print("C1:");
-//      Serial.println(timeStoreC2.list[i]);
-//    }
-//  }
-//  for (int i = 0; i < TIME_STORE_SIZE; i++) {
-//    if (timeStoreC2.list[i] < TIME_STORE_UNSET) {
-//      Serial.print("C2:");
-//      Serial.println(timeStoreC2.list[i]);
-//    }
-//  }
 
   getStoredIpAddress();
 
@@ -375,7 +368,7 @@ void setup() {
   //
   server.begin();
   delay(100);
-  
+
   updateIpAddressBuffer();
   displayIp(LINE_4_Y);
 
@@ -387,7 +380,7 @@ void setup() {
   delay(100);
 
   setSyncProvider(getNtpTime);
-  setScreenMode(SM_STATUS);
+  setScreenMode(SM_SUMMARY);
   haltTimerEvent = 0;
   thread.start(displayThread);
   digitalWrite(LED_BUILTIN, LOW);
@@ -425,6 +418,9 @@ static void displayThread() {
               wakeupScreen();
               break;
             case SM_STATUS:
+              setScreenMode(SM_SUMMARY);
+              break;
+            case SM_SUMMARY:
               setScreenMode(SM_CH1);
               break;
             case SM_CH1:
@@ -458,10 +454,12 @@ static void displayThread() {
         }
         getNextActionTime(timeStoreC1);
         getNextActionTime(timeStoreC2);
-
         switch (screenMode) {
           case SM_STATUS:
             statusScreen();
+            break;
+          case SM_SUMMARY:
+            summaryScreen();
             break;
           case SM_CH1:
             channelScreen(timeStoreC1);
@@ -819,6 +817,33 @@ void setScreenMode(SCREEN_MODE mode) {
   }
 }
 
+void summaryScreen() {
+  display.setTextSize(2);
+  display.setTextColor(1);
+  int w2 = (SCREEN_WIDTH / 2);
+  display.fillRect(0, TITLE_HEIGHT, SCREEN_WIDTH, MAIN_HEIGHT , 0);
+  if (timeStoreC2.stateOn) {
+    display.fillRect(0, TITLE_HEIGHT, w2,  ch2_height + 5, 1);
+    display.drawXBitmap(5, LINE_1X_Y, ch2_bits, ch2_width, ch2_height, 0);
+    display.setCursor(20, LINE_2X_Y);
+  } else {
+    display.drawXBitmap(5, LINE_1X_Y, ch2_bits, ch2_width, ch2_height, 1);
+    display.setCursor(16, LINE_2X_Y);
+  }
+  display.print(timeStoreC2.onOff);
+
+  if (timeStoreC1.stateOn) {
+    display.fillRect(w2 + 10, TITLE_HEIGHT, w2 - 10,  ch2_height + 5, 1);
+    display.drawXBitmap(w2 + 14, LINE_1X_Y, ch1_bits, ch1_width, ch1_height, 0);
+    display.setCursor(w2 + 25, LINE_2X_Y);
+  } else {
+    display.drawXBitmap(w2 + 14, LINE_1X_Y, ch1_bits, ch1_width, ch1_height, 1);
+    display.setCursor(w2 + 20, LINE_2X_Y);
+  }
+  display.print(timeStoreC1.onOff);
+  display.setTextSize(1);
+}
+
 void channelScreen(TimeStoreStruct &ts) {
   if (ts.id == TIME_STORE_C1_ID) {
     display.drawXBitmap(0, LINE_1X_Y, ch1_bits, ch1_width, ch1_height, 1);
@@ -855,7 +880,7 @@ void statusScreen() {
   display.fillRect(0, LINE_2_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, timeStoreC1.stateOn ? 1 : 0);
   display.setTextColor(timeStoreC1.stateOn ? 0 : 1);
   display.drawRect(0, LINE_2_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, 1);
-  
+
   display.setCursor(2, LINE_2_Y + 2);
   display.print(timeStoreC1.tag);
   display.print(": Untill ");
@@ -863,7 +888,7 @@ void statusScreen() {
   display.fillRect(0, LINE_3_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, timeStoreC2.stateOn ? 1 : 0);
   display.setTextColor(timeStoreC2.stateOn ? 0 : 1);
   display.drawRect(0, LINE_3_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, 1);
-  
+
   display.setCursor(2, LINE_3_Y + 2);
   display.print(timeStoreC2.tag);
   display.print(": Untill ");
