@@ -19,7 +19,7 @@ fn main() {
             file_name = &args[index][5..];  
             println!("Data Gen: Output file: {}",file_name);
         } else {
-            times.push(parse_time(&args[index]));
+            times.push(parse_time_to_mins(&args[index]));
         }
     }
     if file_name == "" {
@@ -36,7 +36,7 @@ fn main() {
     create_values(times, file_name);
 }
 
-fn parse_time(s: &str) -> u32 {
+fn parse_time_to_mins(s: &str) -> u32 {
     let mut h: u32 = 0;
     let mut m: u32 = 0;
     let mut hrs = true;
@@ -61,8 +61,8 @@ fn parse_time(s: &str) -> u32 {
     if m > 59 {
         panic!("Minute is > 59: Parameter: '{}'",s);
     }
-    println!("Param {} --> {}:{} ({}) mins",s,h,m, (h * 60) + m);
-    return (h * 60) + m; 
+    println!("Param {} --> {}:{} ({}) mins",s,h,m, (h * HR) + m);
+    return (h * HR) + m; 
 }
 
 fn create_values(day_values: Vec<u32>, filename: &str, ) {
@@ -71,7 +71,7 @@ fn create_values(day_values: Vec<u32>, filename: &str, ) {
     out_str.push_str("[");
     for day in START_DAY..DAY_COUNT {
         for hr in day_values.iter() {
-            let b: u32 = (day * MINS_1_DAY) + (HR * hr);
+            let b: u32 = (day * MINS_1_DAY) + hr;
             out_str.push_str(format!("{},", b).as_str());
             count = count + 1;
             if count > MAX_VALUES {

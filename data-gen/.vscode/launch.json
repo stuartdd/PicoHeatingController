@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["file:datafile1.json", "2:15", "7", "14", "15"],
+            "args": ["file:datafile1.json", "0:00", "1:00", "12:00", "12:30"],
             "cwd": "${workspaceFolder}"
         },
         {
