@@ -29,5 +29,5 @@ Only the first value needs to be '0'.
 
 Note: **The numbers in the file are separated by a Comma ',' NOT a Full stop '.'**
 
-If DHCP fails then the default IP address is containd in the constant: ```DEFAULT_IP_ADDRESS``` and is currently define as: ```192.168.1.177```.
+If DHCP fails to allocate an IP address then the default IP address is containd in the constant: ```DEFAULT_IP_ADDRESS``` and is currently defined as: ```192.168.1.177```.
 
