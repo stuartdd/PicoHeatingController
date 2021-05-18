@@ -2,7 +2,7 @@
 // Test data from the command line.
 //
 // curl http://192.168.1.177
-// curl --data-binary "@data-full.json" -H 'Content-Type: application/json' http://192.168.1.177/timedata
+// curl --data-binary "@ipAddress.json" -H 'Content-Type: application/json' http://192.168.1.177/ip
 //
 // 0 = SAT
 // 6 = FRI
@@ -66,6 +66,7 @@ using namespace rtos;
 #define LED_TIMER_PERIOD 200
 #define HALT_TIMER_PERIOD 10000
 #define BUTTON_SCAN_TIMER_PERIOD 175
+#define STATUS_SCREEN_TIMEOUT_PERIOD 20000
 
 #define SCR_SAV_TIMER_PERIOD 200
 #define SCR_SAV_STEP 2
@@ -77,7 +78,8 @@ using namespace rtos;
 #define PATH_BUFF_LEN 50
 #define TEMP_BUFF_LEN 20
 #define CONT_TYPE_BUFF_LEN 40
-#define HALT_REASON_BUFF_LEN 20
+#define HALT_REASON_BUFF_LEN 21
+#define LAST_STATUS_BUFF_LEN 21
 #define IP_ADDR_BUFF_LEN 21
 #define TIME_BUFF_LEN 14
 #define TIME_BUFF_SHORT_LEN 11
@@ -176,6 +178,7 @@ static unsigned char on_bits[] = {
 MbedI2C myi2c(p20, p21);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &myi2c, 4);
 
+const PROGMEM int DEFAULT_IP_ADDRESS[4] = {192, 168, 1, 177};
 const PROGMEM char CONT_LENGTH_STR[] = "Content-Length:";
 const PROGMEM int CONT_LENGTH_STR_LEN = 15;
 const PROGMEM char CONT_TYPE_STR[] = "Content-Type:";
@@ -240,7 +243,7 @@ struct TimeStoreStruct {
 // with the IP address and port you want to use
 // (port 80 is default for HTTP):
 
-uint16_t ipAddressStore[4] = {192, 168, 1, 177};
+uint16_t ipAddressStore[4] = {0, 0, 0, 0};
 byte mac[] = {
   0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED
 };
@@ -259,7 +262,7 @@ TimeElements timeElements;
 char receiveBuff[RECEIVE_BUFF_LEN + 2]; // Receive buffer for IP requests
 char pathBuff[PATH_BUFF_LEN + 2];
 char cTypeBuff[CONT_TYPE_BUFF_LEN + 2];
-
+char lastStatusBuff[LAST_STATUS_BUFF_LEN];
 char timeBuff[TIME_BUFF_LEN];
 char tempBuff[TEMP_BUFF_LEN];
 char haltReasonBuff[HALT_REASON_BUFF_LEN]; // Used by haltDelayed!
@@ -279,6 +282,8 @@ unsigned long oneSecondEvent = 0;
 unsigned long sleepTimerEvent = 0;
 unsigned long scrSavTimerEvent = 0;
 unsigned long buttonScanTimerEvent = 0;
+unsigned long statusScreenTimeoutEvent = 0;
+
 unsigned long haltTimerEvent = 0;
 unsigned long serialTimeout = 0;
 unsigned long ledTimerEvent = 0;
@@ -344,17 +349,24 @@ void setup() {
     storeTimeData(timeStoreC2);
   }
 
-  getStoredIpAddress();
-
   // Start the Ethernet connection and the server:
   // GP5 is used for Chip select of the Wiznet 5500 Ethernet SPI.
   // Default ports are GP2 - Serial Clock SCK
   // Default ports are GP3 - MISO (TX) Master IN Slave OUT
   // Default ports are GP4 - MOSI (RX)
   Ethernet.init(5);
-  IPAddress ipAddress = IPAddress(ipAddressStore[0], ipAddressStore[1], ipAddressStore[2], ipAddressStore[3]);
-  Ethernet.begin(mac, ipAddress);
-  delay(100);
+
+  if (getStoredIpAddress()) {
+    IPAddress ipAddress = IPAddress(ipAddressStore[0], ipAddressStore[1], ipAddressStore[2], ipAddressStore[3]);
+    Ethernet.begin(mac, ipAddress);
+  } else {
+    displayStatus("Get IP via DHCP", false, true);
+    if (Ethernet.begin(mac) == 0) {
+      displayStatus("DHCP Fail. Default IP", false, true);
+      IPAddress ipAddress = IPAddress(DEFAULT_IP_ADDRESS[0], DEFAULT_IP_ADDRESS[1], DEFAULT_IP_ADDRESS[2], DEFAULT_IP_ADDRESS[3]);
+      Ethernet.begin(mac, ipAddress);
+    }
+  }
 
   // Check for Ethernet hardware present
   if (Ethernet.hardwareStatus() == EthernetNoHardware) {
@@ -380,7 +392,7 @@ void setup() {
   delay(100);
 
   setSyncProvider(getNtpTime);
-  setScreenMode(SM_SUMMARY);
+  setScreenMode(SM_STATUS);
   haltTimerEvent = 0;
   thread.start(displayThread);
   digitalWrite(LED_BUILTIN, LOW);
@@ -389,6 +401,11 @@ void setup() {
 static void displayThread() {
   while (systemIsRunning) {
     currentMillis = millis();
+
+    if ((statusScreenTimeoutEvent != 0) && (currentMillis > statusScreenTimeoutEvent)) {
+      statusScreenTimeoutEvent = 0;
+      setScreenMode(SM_SUMMARY);
+    }
 
     if ((haltTimerEvent > 0) && (currentMillis > haltTimerEvent)) {
       halt(haltReasonBuff);
@@ -613,7 +630,7 @@ void readIpAddressFromPostData() {
       }
     }
     if ((c == 0) || (c == ']') || (index >= 4)) {
-      storeIpAddress();
+      setStoredIpAddress();
       break;
     }
   }
@@ -805,11 +822,15 @@ void setScreenMode(SCREEN_MODE mode) {
   sleepTimerEvent = millis() + SLEEP_TIMER_PERIOD;
   if (screenMode != mode) {
     switch (mode) {
+      case SM_STATUS:
+        statusScreenTimeoutEvent = millis() + STATUS_SCREEN_TIMEOUT_PERIOD;
+        break;
       case SM_OFF:
         ledDutyCycle = 9;
         restoreScreenMode = screenMode;
         break;
       default:
+        statusScreenTimeoutEvent = 0;
         ledDutyCycle = 5;
     }
     display.fillRect(0, TITLE_HEIGHT, SCREEN_WIDTH, MAIN_HEIGHT, 0);
@@ -872,11 +893,7 @@ void statusScreen() {
   display.fillRect(0, LINE_1_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, 0);
   display.setTextColor(1);
   display.setCursor(2, LINE_1_Y + 2);
-  display.print("Min:");
-  display.print(deriveMinuteOfWeek());
-  display.print(":");
-  updateTimeBuff(timeBuff, (minuteZero) * 60, true);
-  display.print(timeBuff);
+  display.print(lastStatusBuff);
   display.fillRect(0, LINE_2_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, timeStoreC1.stateOn ? 1 : 0);
   display.setTextColor(timeStoreC1.stateOn ? 0 : 1);
   display.drawRect(0, LINE_2_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, 1);
@@ -901,6 +918,7 @@ void displayStatus(const char* txt, bool inv, bool echo) {
     Serial.print(millis());
     Serial.println(": Status:" + String(txt));
   }
+  strcpy(lastStatusBuff, txt);
   if (inv) {
     display.fillRect(0, 0, SCREEN_WIDTH, TITLE_HEIGHT, 1);
     display.setTextColor(0);
@@ -909,7 +927,7 @@ void displayStatus(const char* txt, bool inv, bool echo) {
     display.setTextColor(1);
   }
   display.setCursor(2, 4);
-  display.print(txt);
+  display.print(lastStatusBuff);
   display.display();
 }
 
@@ -922,6 +940,10 @@ void displayIp(int y) {
 
 void displayTime() {
   if (updateTimeBuff(timeBuff, now(), true)) {
+    display.fillRect(0, LINE_0_Y, SCREEN_MIDDLE, TITLE_HEIGHT, 0);
+    display.setTextColor(1);
+    display.setCursor(4, LINE_0_Y + 4);
+    display.print("Time:");
     display.fillRect(SCREEN_MIDDLE, LINE_0_Y, SCREEN_WIDTH - SCREEN_MIDDLE, TITLE_HEIGHT, 1);
     display.setTextColor(0);
     display.setCursor(SCREEN_MIDDLE + 4, LINE_0_Y + 4);
@@ -1168,7 +1190,22 @@ void storeTimeData(TimeStoreStruct &ts) {
   }
 }
 
-void storeIpAddress() {
+bool getStoredIpAddress() {
+  mbed::KVStore::info_t info;
+  if (eeprom.get_info(IP_ADDR_STORE_KEY, &info) != MBED_ERROR_ITEM_NOT_FOUND) {
+    eeprom.get(IP_ADDR_STORE_KEY, ipAddressStore, sizeof(ipAddressStore));
+    if (ipAddressStore[0] != 0) {
+      return true;
+    }
+  }
+  ipAddressStore[0] = DEFAULT_IP_ADDRESS[0];
+  ipAddressStore[1] = DEFAULT_IP_ADDRESS[1];
+  ipAddressStore[2] = DEFAULT_IP_ADDRESS[2];
+  ipAddressStore[3] = DEFAULT_IP_ADDRESS[3];
+  return false;
+}
+
+void setStoredIpAddress() {
   eeprom.set(IP_ADDR_STORE_KEY, ipAddressStore, sizeof(ipAddressStore) , 0);
   if (Serial) {
     Serial.print(IP_ADDR_STORE_KEY);
@@ -1205,16 +1242,6 @@ void getNextActionTime(TimeStoreStruct &ts) {
   ts.stateOn = false;
   strcpy(ts.onOff, "OFF");
   strcpy(ts.onOffTime, INVALID_TIME_SHORT);
-}
-
-bool getStoredIpAddress() {
-  mbed::KVStore::info_t info;
-  if (eeprom.get_info(IP_ADDR_STORE_KEY, &info) != MBED_ERROR_ITEM_NOT_FOUND) {
-    eeprom.get(IP_ADDR_STORE_KEY, ipAddressStore, sizeof(ipAddressStore));
-    return true;
-  } else {
-    return false;
-  }
 }
 
 bool getStoredTimeData(TimeStoreStruct &ts) {
@@ -1300,7 +1327,6 @@ time_t getNtpTime() {
       secsSince1900 |= (unsigned long)ntpMessageBuffer[41] << 16;
       secsSince1900 |= (unsigned long)ntpMessageBuffer[42] << 8;
       secsSince1900 |= (unsigned long)ntpMessageBuffer[43];
-      displayStatus("Time:", false, true);
       setSyncInterval(TIME_SYNC_INTERVAL_SEC_LONG);
       time_t t = secsSince1900 - 2208988800UL + (timeZone * SEC_24_HOUR);
       t = t + deriveDST(t);
