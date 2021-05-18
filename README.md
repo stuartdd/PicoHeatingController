@@ -20,7 +20,7 @@ Setting the IP address and overriding the DHCP process (automatic IP address all
 curl --data-binary "@ipAddress.json" -H 'Content-Type: application/json' http://192.168.1.177/ip
 ```
 
-The content of the file 'ipAddress.json' would typically contain the following:
+The file 'ipAddress.json' would typically contain the following valid JSON:
 
 To set a specific IP address. E.g. ```[192,168,1,123]```
 
