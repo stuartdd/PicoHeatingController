@@ -114,6 +114,15 @@ enum SCREEN_MODE {
 SCREEN_MODE screenMode = SM_SUMMARY;
 SCREEN_MODE restoreScreenMode = SM_SUMMARY; // The screen mode when we wake up from screen saver
 
+// For each Channel schedule.
+//  Scheduled by the time store.
+//  Boosted - On for the next 1, 2 or 3 hours
+//  OFF - Always OFF
+//  ON - Always ON
+enum CHANNEL_MODE {
+  CM_SCHEDULED, CM_BOOST, CM_OFF
+};
+
 // Various constants thar are held in program memory so they do not consume RAM
 const PROGMEM int DEFAULT_IP_ADDRESS[4] = {192, 168, 1, 177};
 const PROGMEM char CONT_LENGTH_STR[] = "Content-Length:";
@@ -136,27 +145,21 @@ const PROGMEM char WEEK_DAY[][4] = {"---",  "SUN", "MON", "TUE", "WED", "THU", "
 const PROGMEM char INVALID_TIME[TIME_BUFF_LEN] = "---  --:--:--";
 const PROGMEM char INVALID_TIME_SHORT[TIME_BUFF_SHORT_LEN] = "---  --:--";
 
-const PROGMEM Icon TIME_STORE_ICON[TIME_STORE_COUNT] = {iconC1, iconC2} ;
-const PROGMEM char TIME_STORE_KEY[TIME_STORE_COUNT][STORE_KEY_LEN] = {"timeStoreC1", "timeStoreC2"} ;
+const PROGMEM Icon TIME_STORE_ICON[TIME_STORE_COUNT] = {iconC1, iconC2};
 const PROGMEM char TIME_STORE_TAG[TIME_STORE_COUNT][3] = {"CH", "HW"};
 const PROGMEM char TIME_STORE_ID[TIME_STORE_COUNT][3] = {"C1", "C2"};
 const PROGMEM SCREEN_MODE SCREEN_MODE_FOR_ID[TIME_STORE_COUNT] = {SM_CH1, SM_CH2};
 const PROGMEM int TIME_STORE_C1_INDEX = 0;
 const PROGMEM int TIME_STORE_C2_INDEX = 1;
 
+const PROGMEM char TIME_STORE_KEY[TIME_STORE_COUNT][STORE_KEY_LEN] = {"timeStoreC1", "timeStoreC2"} ;
 const PROGMEM char IP_ADDR_STORE_KEY[STORE_KEY_LEN] = "ipAddrStore";
+
 const PROGMEM unsigned int LOCAL_PORT = 8888;
 const PROGMEM int timeZone = 0;
 
 
-// For each Channel schedule.
-//  Scheduled by the time store.
-//  Boosted - On for the next 1, 2 or 3 hours
-//  OFF - Always OFF
-//  ON - Always ON
-enum CHANNEL_MODE {
-  CM_SCHEDULED, CM_BOOST, CM_OFF
-};
+
 
 struct TimeStoreStruct {
   int index;
@@ -383,7 +386,7 @@ static void displayThread() {
 
     if (currentMillis > oneSecondEvent) {
       oneSecondEvent = currentMillis + MS_1_SEC;
-      watchdog.kick();      
+      watchdog.kick();
       for (int i = 0; i < TIME_STORE_COUNT; i++) {
         getNextActionTime(timeStore[i]);
       }
@@ -543,14 +546,17 @@ void sendGetResponse(EthernetClient client) {
       if (strcmp("boost", pathItemBuff) == 0) {
         setChannelBoost(tsIndex, at);
         setScreenModeWithIndex(tsIndex);
+        initRespJson(tsIndex, true);
         sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
       } else {
         if (strcmp("off", pathItemBuff) == 0) {
           setChannelOff(tsIndex);
           setScreenModeWithIndex(tsIndex);
+          initRespJson(tsIndex, true);
           sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
         } else {
           if (strcmp("state", pathItemBuff) == 0) {
+            setScreenMode(SM_STATUS);
             initRespJson(tsIndex, true);
             sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
           } else {
@@ -589,44 +595,11 @@ void sendPostResponse(EthernetClient client) {
   }
 }
 
-void initRespJson(int tsIndex, bool closeJson) {
-  clearResp();
-  appendRespChar('{');
-  appendQuoteEnt("id", ':');
-  appendQuoteEnt(TIME_STORE_ID[tsIndex], ',');
-  appendQuoteEnt("tag", ':');
-  appendQuoteEnt(TIME_STORE_TAG[tsIndex], ',');
-  appendQuoteEnt("mode", ':');
-  switch (timeStore[tsIndex].mode) {
-    case CM_OFF:
-      appendQuoteEnt("OFF", ',');
-      break;
-    case CM_BOOST:
-      appendQuoteEnt("BOOST", ',');
-      break;
-    case CM_SCHEDULED:
-      appendQuoteEnt("SCHED", ',');
-      break;
-  }
-  appendQuoteEnt("state", ':');
-  if (timeStore[tsIndex].stateOn) {
-    appendQuoteEnt("ON", ',');
-  } else {
-    appendQuoteEnt("OFF", ',');
-  }
-  appendQuoteEnt("untill", ':');
-  if (closeJson) {
-    appendQuoteEnt(timeStore[tsIndex].onOffTime, '}');
-  } else {
-    appendQuoteEnt(timeStore[tsIndex].onOffTime, ',');
-  }
-}
 
 void setChannelOff(int tsIndex) {
   timeStore[tsIndex].mode = CM_OFF;
   timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
   getNextActionTime(timeStore[tsIndex]);
-  initRespJson(tsIndex, true);
 }
 
 void setChannelBoost(int tsIndex, int nextItem) {
@@ -641,7 +614,6 @@ void setChannelBoost(int tsIndex, int nextItem) {
     timeStore[tsIndex].mode = CM_BOOST;
   }
   getNextActionTime(timeStore[tsIndex]);
-  initRespJson(tsIndex, true);
 }
 
 void readIpAddressFromPostData() {
@@ -701,6 +673,42 @@ void readTimeDataFromPostData(int tsIndex) {
     }
   }
   countTimeData(tsIndex);
+}
+
+void initRespJson(int tsIndex, bool closeJson) {
+  clearResp();
+  appendRespChar('{');
+  appendQuoteEnt("id", ':');
+  appendQuoteEnt(TIME_STORE_ID[tsIndex], ',');
+  appendQuoteEnt("tag", ':');
+  appendQuoteEnt(TIME_STORE_TAG[tsIndex], ',');
+  appendQuoteEnt("mode", ':');
+  switch (timeStore[tsIndex].mode) {
+    case CM_OFF:
+      appendQuoteEnt("OFF", ',');
+      break;
+    case CM_BOOST:
+      appendQuoteEnt("BOOST", ',');
+      break;
+    case CM_SCHEDULED:
+      appendQuoteEnt("SCHED", ',');
+      break;
+  }
+  appendQuoteEnt("state", ':');
+  if (timeStore[tsIndex].stateOn) {
+    appendQuoteEnt("ON", ',');
+  } else {
+    appendQuoteEnt("OFF", ',');
+  }
+  appendQuoteEnt("untill", ':');
+  appendQuoteEnt(timeStore[tsIndex].onOffTime, ',');
+
+  appendQuoteEnt("time", ':');
+  if (closeJson) {
+    appendQuoteEnt(timeBuff, '}');
+  } else {
+    appendQuoteEnt(timeBuff, ',');
+  }
 }
 
 void sendErrorResponse(EthernetClient client, const int code, const char* msg) {
