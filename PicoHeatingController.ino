@@ -67,11 +67,11 @@
 #define MS_24_HOUR 86400000
 #define MS_1_HOUR 360000
 #define MS_1_SEC 1000
-#define SLEEP_TIMER_PERIOD 300000
+#define SLEEP_TIMER_PERIOD 60000
 #define LED_TIMER_PERIOD 200
-#define HALT_TIMER_PERIOD 10000
+#define HALT_TIMER_PERIOD 5000
 #define BUTTON_SCAN_TIMER_PERIOD 100
-#define STATUS_SCREEN_TIMEOUT_PERIOD 20000
+#define STATUS_SCREEN_TIMEOUT_PERIOD 10000
 #define SCR_SAV_TIMER_PERIOD 200
 #define WATCHDOG_TIMEOUT 30000
 
@@ -101,6 +101,18 @@
 #define TIME_STORE_UNSET 65535
 #define TIME_STORE_COUNT 2
 
+// Request tyoes. Detirmined when the request header is read from the network.
+enum REQ_TYPE {
+  RT_NOT_FOUND, RT_UNKNOWN, RT_GET, RT_POST
+};
+REQ_TYPE requestType = RT_NOT_FOUND;
+
+// The various screens
+enum SCREEN_MODE {
+  SM_STATUS, SM_SUMMARY, SM_CH1, SM_CH2, SM_OFF
+};
+SCREEN_MODE screenMode = SM_SUMMARY;
+SCREEN_MODE restoreScreenMode = SM_SUMMARY; // The screen mode when we wake up from screen saver
 
 // Various constants thar are held in program memory so they do not consume RAM
 const PROGMEM int DEFAULT_IP_ADDRESS[4] = {192, 168, 1, 177};
@@ -123,9 +135,12 @@ const PROGMEM char RESP_HTTP_404[] = "NOT FOUND";
 const PROGMEM char WEEK_DAY[][4] = {"---",  "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT", "+++"};
 const PROGMEM char INVALID_TIME[TIME_BUFF_LEN] = "---  --:--:--";
 const PROGMEM char INVALID_TIME_SHORT[TIME_BUFF_SHORT_LEN] = "---  --:--";
+
 const PROGMEM Icon TIME_STORE_ICON[TIME_STORE_COUNT] = {iconC1, iconC2} ;
 const PROGMEM char TIME_STORE_KEY[TIME_STORE_COUNT][STORE_KEY_LEN] = {"timeStoreC1", "timeStoreC2"} ;
 const PROGMEM char TIME_STORE_TAG[TIME_STORE_COUNT][3] = {"CH", "HW"};
+const PROGMEM char TIME_STORE_ID[TIME_STORE_COUNT][3] = {"C1", "C2"};
+const PROGMEM SCREEN_MODE SCREEN_MODE_FOR_ID[TIME_STORE_COUNT] = {SM_CH1, SM_CH2};
 const PROGMEM int TIME_STORE_C1_INDEX = 0;
 const PROGMEM int TIME_STORE_C2_INDEX = 1;
 
@@ -133,18 +148,6 @@ const PROGMEM char IP_ADDR_STORE_KEY[STORE_KEY_LEN] = "ipAddrStore";
 const PROGMEM unsigned int LOCAL_PORT = 8888;
 const PROGMEM int timeZone = 0;
 
-// Request tyoes. Detirmined when the request header is read from the network.
-enum REQ_TYPE {
-  RT_NOT_FOUND, RT_UNKNOWN, RT_GET, RT_POST
-};
-REQ_TYPE requestType = RT_NOT_FOUND;
-
-// The various screens
-enum SCREEN_MODE {
-  SM_STATUS, SM_SUMMARY, SM_CH1, SM_CH2, SM_OFF
-};
-SCREEN_MODE screenMode = SM_SUMMARY;
-SCREEN_MODE restoreScreenMode = SM_SUMMARY; // The screen mode when we wake up from screen saver
 
 // For each Channel schedule.
 //  Scheduled by the time store.
@@ -157,8 +160,6 @@ enum CHANNEL_MODE {
 
 struct TimeStoreStruct {
   int index;
-  char key[STORE_KEY_LEN];
-  char tag[3];
   uint16_t list[TIME_STORE_SIZE];
   uint16_t boostMinutes = TIME_STORE_UNSET;
   CHANNEL_MODE mode = CM_SCHEDULED;
@@ -317,8 +318,10 @@ void setup() {
   delay(100);
 
   setSyncProvider(getNtpTime);
-  setScreenMode(SM_STATUS);
   haltTimerEvent = 0;
+  statusScreenTimeoutEvent = 0;
+  setScreenMode(SM_STATUS);
+
   thread.start(displayThread);
   digitalWrite(LED_BUILTIN, LOW);
 }
@@ -327,13 +330,13 @@ static void displayThread() {
   while (systemIsRunning) {
     currentMillis = millis();
 
-    if ((statusScreenTimeoutEvent != 0) && (currentMillis > statusScreenTimeoutEvent)) {
-      statusScreenTimeoutEvent = 0;
-      setScreenMode(SM_SUMMARY);
-    }
-
     if ((haltTimerEvent > 0) && (currentMillis > haltTimerEvent)) {
       halt(haltReasonBuff);
+    }
+
+    if ((statusScreenTimeoutEvent > 0) && (currentMillis > statusScreenTimeoutEvent)) {
+      statusScreenTimeoutEvent = 0;
+      setScreenMode(SM_SUMMARY);
     }
 
     if (currentMillis > sleepTimerEvent) {
@@ -378,25 +381,14 @@ static void displayThread() {
       }
     }
 
-    if (screenMode == SM_OFF) {
-      if (currentMillis > scrSavTimerEvent) {
-        scrSavTimerEvent = currentMillis + SCR_SAV_TIMER_PERIOD;
-        watchdog.kick();
-        moveScrSav();
-        display.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0);
-        display.fillRect(scrSavX, scrSavY, SCR_SAV_WIDTH, SCR_SAV_WIDTH, 1);
-        display.display();
+    if (currentMillis > oneSecondEvent) {
+      oneSecondEvent = currentMillis + MS_1_SEC;
+      watchdog.kick();      
+      for (int i = 0; i < TIME_STORE_COUNT; i++) {
+        getNextActionTime(timeStore[i]);
       }
-    } else {
-      if (currentMillis > oneSecondEvent) {
-        oneSecondEvent = currentMillis + MS_1_SEC;
-        watchdog.kick();
-        if (screenMode != SM_OFF) {
-          displayTime();
-        }
-        for (int tsIndex = 0; tsIndex < TIME_STORE_COUNT; tsIndex++) {
-          getNextActionTime(timeStore[tsIndex]);
-        }
+
+      if (screenMode != SM_OFF) {
         switch (screenMode) {
           case SM_STATUS:
             statusScreen();
@@ -411,8 +403,18 @@ static void displayThread() {
             channelScreen(TIME_STORE_C2_INDEX);
             break;
         }
+        displayTime();
         display.display();
       }
+    }
+
+    if ((currentMillis > scrSavTimerEvent) && (screenMode == SM_OFF)) {
+      scrSavTimerEvent = currentMillis + SCR_SAV_TIMER_PERIOD;
+      watchdog.kick();
+      moveScrSav();
+      display.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0);
+      display.fillRect(scrSavX, scrSavY, SCR_SAV_WIDTH, SCR_SAV_WIDTH, 1);
+      display.display();
     }
   }
 }
@@ -483,11 +485,9 @@ void loop() {
   }
 }
 
-
-
 void sendGetResponse(EthernetClient client) {
   clearResp();
-  int at = findPathItemInPath(0);
+  int at = nextPathItemInPath(0);
   if (strcmp("reset", pathItemBuff) == 0) {
     appendRespChar('{');
     appendQuoteEnt("reset", ':');
@@ -504,36 +504,63 @@ void sendGetResponse(EthernetClient client) {
     if (strcmp("index", pathItemBuff) == 0) {
       sendIndexResponse(client);
     } else {
-      if (strcmp("boostC1", pathItemBuff) == 0) {
-        setChannelBoost(TIME_STORE_C1_INDEX, at);
+      //
+      // Derive the index from the first element in the request.
+      // Can be HW,C1,CH,C2 etc from TIME_STORE_TAG or TIME_STORE_ID
+      //
+      int tsIndex = -1;
+      for (int i = 0 ; i < TIME_STORE_COUNT; i++) {
+        if (strcmp(TIME_STORE_TAG[i], pathItemBuff) == 0) {
+          tsIndex = i;
+          break;
+        }
+      }
+      //
+      // If not in TIME_STORE_TAG try TIME_STORE_ID
+      //
+      if (tsIndex < 0) {
+        for (int i = 0 ; i < TIME_STORE_COUNT; i++) {
+          if (strcmp(TIME_STORE_ID[i], pathItemBuff) == 0) {
+            tsIndex = i;
+            break;
+          }
+        }
+      }
+      //
+      // If found then skip the element in the request
+      //
+      if (tsIndex >= 0) {
+        at = nextPathItemInPath(at);
+      }
+      Serial.print("REQ:");
+      Serial.print(tsIndex);
+      if (tsIndex >= 0) {
+        Serial.print("TAG:");
+        Serial.print(TIME_STORE_TAG[tsIndex]);
+      }
+      Serial.print("NEXT:");
+      Serial.println(pathItemBuff);
+      if (strcmp("boost", pathItemBuff) == 0) {
+        setChannelBoost(tsIndex, at);
+        setScreenModeWithIndex(tsIndex);
         sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
-        setScreenMode(SM_CH1);
       } else {
-        if (strcmp("boostC2", pathItemBuff) == 0) {
-          setChannelBoost(TIME_STORE_C2_INDEX, at);
+        if (strcmp("off", pathItemBuff) == 0) {
+          setChannelOff(tsIndex);
+          setScreenModeWithIndex(tsIndex);
           sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
-          setScreenMode(SM_CH2);
         } else {
-          if (strcmp("offC1", pathItemBuff) == 0) {
-            setChannelOff(TIME_STORE_C1_INDEX);
+          if (strcmp("state", pathItemBuff) == 0) {
+            initRespJson(tsIndex, true);
             sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
-            setScreenMode(SM_CH1);
           } else {
-            if (strcmp("offC2", pathItemBuff) == 0) {
-              setChannelOff(TIME_STORE_C2_INDEX);
-              sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
-              setScreenMode(SM_CH2);
-            } else {
-              sendErrorResponse(client, 404, RESP_HTTP_404);
-            }
+            sendErrorResponse(client, 404, RESP_HTTP_404);
           }
         }
       }
     }
   }
 }
-
-
 
 void sendPostResponse(EthernetClient client) {
   trimReceiveBuffer();
@@ -562,19 +589,48 @@ void sendPostResponse(EthernetClient client) {
   }
 }
 
+void initRespJson(int tsIndex, bool closeJson) {
+  clearResp();
+  appendRespChar('{');
+  appendQuoteEnt("id", ':');
+  appendQuoteEnt(TIME_STORE_ID[tsIndex], ',');
+  appendQuoteEnt("tag", ':');
+  appendQuoteEnt(TIME_STORE_TAG[tsIndex], ',');
+  appendQuoteEnt("mode", ':');
+  switch (timeStore[tsIndex].mode) {
+    case CM_OFF:
+      appendQuoteEnt("OFF", ',');
+      break;
+    case CM_BOOST:
+      appendQuoteEnt("BOOST", ',');
+      break;
+    case CM_SCHEDULED:
+      appendQuoteEnt("SCHED", ',');
+      break;
+  }
+  appendQuoteEnt("state", ':');
+  if (timeStore[tsIndex].stateOn) {
+    appendQuoteEnt("ON", ',');
+  } else {
+    appendQuoteEnt("OFF", ',');
+  }
+  appendQuoteEnt("untill", ':');
+  if (closeJson) {
+    appendQuoteEnt(timeStore[tsIndex].onOffTime, '}');
+  } else {
+    appendQuoteEnt(timeStore[tsIndex].onOffTime, ',');
+  }
+}
+
 void setChannelOff(int tsIndex) {
   timeStore[tsIndex].mode = CM_OFF;
   timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
   getNextActionTime(timeStore[tsIndex]);
-  appendRespChar('{');
-  appendQuoteEnt("id", ':');
-  appendQuoteEnt(timeStore[tsIndex].tag, ',');
-  appendQuoteEnt("state", ':');
-  appendQuoteEnt("OFF", '}');
+  initRespJson(tsIndex, true);
 }
 
 void setChannelBoost(int tsIndex, int nextItem) {
-  int at = findPathItemInPath(nextItem);
+  int at = nextPathItemInPath(nextItem);
   int mins = atoi(pathItemBuff);
   if (mins == 0) {
     timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
@@ -585,15 +641,7 @@ void setChannelBoost(int tsIndex, int nextItem) {
     timeStore[tsIndex].mode = CM_BOOST;
   }
   getNextActionTime(timeStore[tsIndex]);
-  appendRespChar('{');
-  appendQuoteEnt("id", ':');
-  appendQuoteEnt(timeStore[tsIndex].tag, ',');
-  appendQuoteEnt("boost", ':');
-  if (mins == 0) {
-    appendQuoteEnt("RESET", '}');
-  } else {
-    appendQuoteEnt(timeStore[tsIndex].onOffTime, '}');
-  }
+  initRespJson(tsIndex, true);
 }
 
 void readIpAddressFromPostData() {
@@ -628,7 +676,7 @@ void readIpAddressFromPostData() {
 void readTimeDataFromPostData(int tsIndex) {
   initTimeStore(tsIndex);
   Serial.print("POST: Read time data:");
-  Serial.println(timeStore[tsIndex].key);
+  Serial.println(TIME_STORE_KEY[tsIndex]);
   int index = 0;
   int tbIndex = 0;
   char c;
@@ -807,6 +855,10 @@ void wakeupScreen() {
   setScreenMode(restoreScreenMode);
 }
 
+void setScreenModeWithIndex(int tsIndex) {
+  setScreenMode(SCREEN_MODE_FOR_ID[tsIndex]);
+}
+
 void setScreenMode(SCREEN_MODE mode) {
   sleepTimerEvent = millis() + SLEEP_TIMER_PERIOD;
   if (screenMode != mode) {
@@ -912,7 +964,7 @@ void statusScreen() {
   display.drawRect(0, LINE_2_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, 1);
 
   display.setCursor(2, LINE_2_Y + 2);
-  display.print(timeStore[TIME_STORE_C1_INDEX].tag);
+  display.print(TIME_STORE_TAG[TIME_STORE_C1_INDEX]);
   display.print(": Untill ");
   display.print(timeStore[TIME_STORE_C1_INDEX].onOffTime);
   display.fillRect(0, LINE_3_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, timeStore[TIME_STORE_C2_INDEX].stateOn ? 1 : 0);
@@ -920,7 +972,7 @@ void statusScreen() {
   display.drawRect(0, LINE_3_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, 1);
 
   display.setCursor(2, LINE_3_Y + 2);
-  display.print(timeStore[TIME_STORE_C2_INDEX].tag);
+  display.print(TIME_STORE_TAG[TIME_STORE_C2_INDEX]);
   display.print(": Untill ");
   display.print(timeStore[TIME_STORE_C2_INDEX].onOffTime);
   displayIp(LINE_4_Y);
@@ -1041,7 +1093,7 @@ void updateIpAddressBuffer() {
   pushIntToBuff(ipAddressBuffer, Ethernet.localIP()[3], 16, 3, 0);
 }
 
-int findPathItemInPath(int start) {
+int nextPathItemInPath(int start) {
   int posIn = start;
   int posOut = 0;
   char c = pathBuff[posIn];
@@ -1186,13 +1238,10 @@ void initTimeStore(int tsIndex) {
   timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
   timeStore[tsIndex].mode = CM_SCHEDULED;
   timeStore[tsIndex].count = 0;
-  strcpy(timeStore[tsIndex].key, TIME_STORE_KEY[tsIndex]);
-  strcpy(timeStore[tsIndex].tag, TIME_STORE_TAG[tsIndex]);
-
   strcpy(timeStore[tsIndex].onOff, "OFF");
   strcpy(timeStore[tsIndex].onOffTime, INVALID_TIME_SHORT);
   if (Serial) {
-    Serial.print(timeStore[tsIndex].key);
+    Serial.print(TIME_STORE_KEY[tsIndex]);
     Serial.println(" - Data reset");
   }
 }
@@ -1217,9 +1266,9 @@ int sortDesc(const void *cmp1, const void *cmp2)
 void storeTimeData(int tsIndex) {
   qsort(timeStore[tsIndex].list, TIME_STORE_SIZE, sizeof(timeStore[tsIndex].list[0]), sortDesc);
   countTimeData(tsIndex);
-  eeprom.set(timeStore[tsIndex].key, timeStore[tsIndex].list, sizeof(timeStore[tsIndex].list) , 0);
+  eeprom.set(TIME_STORE_KEY[tsIndex], timeStore[tsIndex].list, sizeof(timeStore[tsIndex].list) , 0);
   if (Serial) {
-    Serial.print(timeStore[tsIndex].key);
+    Serial.print(TIME_STORE_KEY[tsIndex]);
     Serial.print(" ");
     Serial.print(timeStore[tsIndex].count);
     Serial.println(" - items Stored (sorted)");
@@ -1268,10 +1317,12 @@ void getNextActionTime(TimeStoreStruct &ts) {
         strcpy(ts.onOff, "BOOST");
         updateTimeBuff(ts.onOffTime, (minuteZero + ts.boostMinutes) * 60, false);
         return;
+      } else {
+        ts.mode = CM_SCHEDULED;
+        ts.boostMinutes = TIME_STORE_UNSET;
       }
   }
-  ts.mode = CM_SCHEDULED;
-  ts.boostMinutes = TIME_STORE_UNSET;
+
   bool stOn = false;
   for (int i = 0; i < TIME_STORE_SIZE; i++) {
     if (ts.list[i] < TIME_STORE_UNSET) {
@@ -1297,11 +1348,11 @@ void getNextActionTime(TimeStoreStruct &ts) {
 
 bool getStoredTimeData(int tsIndex) {
   mbed::KVStore::info_t info;
-  if (eeprom.get_info(timeStore[tsIndex].key, &info) != MBED_ERROR_ITEM_NOT_FOUND) {
-    eeprom.get(timeStore[tsIndex].key, timeStore[tsIndex].list, sizeof(timeStore[tsIndex].list));
+  if (eeprom.get_info(TIME_STORE_KEY[tsIndex], &info) != MBED_ERROR_ITEM_NOT_FOUND) {
+    eeprom.get(TIME_STORE_KEY[tsIndex], timeStore[tsIndex].list, sizeof(timeStore[tsIndex].list));
     countTimeData(tsIndex);
     if (Serial) {
-      Serial.print(timeStore[tsIndex].key);
+      Serial.print(TIME_STORE_KEY[tsIndex]);
       Serial.print(" ");
       Serial.print(timeStore[tsIndex].count);
       Serial.println(" - items Loaded");
@@ -1309,7 +1360,7 @@ bool getStoredTimeData(int tsIndex) {
     return true;
   } else {
     if (Serial) {
-      Serial.print(timeStore[tsIndex].key);
+      Serial.print(TIME_STORE_KEY[tsIndex]);
       Serial.println(" - Data Not Found");
     }
     countTimeData(tsIndex);
