@@ -18,24 +18,27 @@
 #include <Dns.h>
 #include <cstring>
 #include <Time.h>
+#include "icons.h"
 
 #include "FlashIAPBlockDevice.h"
 #include "TDBStore.h"
 
-using namespace rtos;
+#define MODE_BUTTON_PIN 14
 
+// Define screen positions.
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
-#define SCREEN_MIDDLE 40
-#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+#define SCREEN_MIDDLE 40 // Not quite the middle, more to the left ;-)
+#define SCREEN_HALF 64 // Not quite the middle, more to the left ;-)
+#define SCREEN_ADDRESS 0x3C // See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
 
 #define TITLE_HEIGHT 16 // The height of the yellow bit at the top of the screen
 #define MAIN_HEIGHT 48 // The height of the bit below the yellow bit
 
-#define SCR_SAV_X_MAX 125
+#define SCR_SAV_X_MAX 125 // Screen limits for the screen saver DOT!
 #define SCR_SAV_Y_MAX 61
-
-#define MODE_BUTTON_PIN 14
+#define SCR_SAV_STEP 2
+#define SCR_SAV_WIDTH 2
 
 #define LINE_HEIGHT 12
 #define LINE_0_Y 0
@@ -48,12 +51,14 @@ using namespace rtos;
 #define LINE_3_Y (TITLE_HEIGHT + (LINE_HEIGHT * 2))
 #define LINE_4_Y (TITLE_HEIGHT + (LINE_HEIGHT * 3) + 2)
 
+// Network Time Protocol process definitions use by getNtpTime()
 #define NTP_POOL_URL "pool.ntp.org"
 #define NTP_IP 129,6,15,30
+
+// Define varous time periods, timeout values and intervals
 #define NTP_TIME_OUT_MS 5000
 #define TIME_SYNC_INTERVAL_SEC_LONG 600
 #define TIME_SYNC_INTERVAL_SEC_SHORT 20
-
 #define SEC_24_HOUR 86400
 #define SEC_1_HOUR 3600
 #define MIN_24_HOUR 1440
@@ -65,15 +70,15 @@ using namespace rtos;
 #define SLEEP_TIMER_PERIOD 300000
 #define LED_TIMER_PERIOD 200
 #define HALT_TIMER_PERIOD 10000
-#define BUTTON_SCAN_TIMER_PERIOD 175
+#define BUTTON_SCAN_TIMER_PERIOD 100
 #define STATUS_SCREEN_TIMEOUT_PERIOD 20000
-
 #define SCR_SAV_TIMER_PERIOD 200
-#define SCR_SAV_STEP 2
-#define SCR_SAV_WIDTH 2
+#define WATCHDOG_TIMEOUT 30000
 
+// If the UNIX time value returned from NTP is below this then it is invalid!
 #define UNIX_TIME_START_2021 1609459200
 
+// Define various buffer lengths.
 #define RECEIVE_BUFF_LEN 400
 #define PATH_BUFF_LEN 50
 #define TEMP_BUFF_LEN 20
@@ -84,100 +89,20 @@ using namespace rtos;
 #define TIME_BUFF_LEN 14
 #define TIME_BUFF_SHORT_LEN 11
 #define NTP_BUFF_LEN 48
-
-#define ORD_OF_CHAR_0 48
-
-
-#define TIME_STORE_SIZE 56
 #define STORE_KEY_LEN 15
 
+// The ordinal (decimal ascii) value of the '0' character
+#define ORD_OF_CHAR_0 48
+
+// Number of values in the time store.
+// These are the integer minute values for the weeks schedule.
+// They are stored in EEPROM and in memory in the TimeStoreStruct.
+#define TIME_STORE_SIZE 56
 #define TIME_STORE_UNSET 65535
+#define TIME_STORE_COUNT 2
 
-#define WATCHDOG_TIMEOUT 30000
 
-#define ch2_width 55
-#define ch2_height 26
-static unsigned char ch2_bits[] = {
-  0x3f, 0x00, 0x1f, 0x3f, 0xe0, 0x03, 0x3e, 0x3f, 0x00, 0x1f, 0x3e, 0xe0,
-  0x03, 0x3e, 0x3f, 0x00, 0x1f, 0x3e, 0xf0, 0x03, 0x3f, 0x3f, 0x00, 0x1f,
-  0x7e, 0xf0, 0x07, 0x3f, 0x3f, 0x00, 0x1f, 0x7e, 0xf0, 0x07, 0x3f, 0x3f,
-  0x00, 0x1f, 0x7e, 0xf0, 0x07, 0x1f, 0x3f, 0x00, 0x1f, 0x7c, 0xf0, 0x07,
-  0x1f, 0x3f, 0x00, 0x1f, 0x7c, 0xf8, 0x0f, 0x1f, 0x3f, 0x00, 0x1f, 0xfc,
-  0xf8, 0x8f, 0x1f, 0x3f, 0x00, 0x1f, 0xfc, 0xf8, 0x8f, 0x1f, 0x3f, 0x80,
-  0x1f, 0xf8, 0xf8, 0x8f, 0x0f, 0xff, 0xff, 0x1f, 0xf8, 0xf8, 0x8f, 0x0f,
-  0xff, 0xff, 0x1f, 0xf8, 0x7c, 0x9f, 0x0f, 0xff, 0xff, 0x1f, 0xf8, 0x7c,
-  0xdf, 0x0f, 0xff, 0xff, 0x1f, 0xf8, 0x3d, 0xdf, 0x0f, 0x3f, 0x00, 0x1f,
-  0xf0, 0x3d, 0xde, 0x07, 0x3f, 0x00, 0x1f, 0xf0, 0x3f, 0xfe, 0x07, 0x3f,
-  0x00, 0x1f, 0xf0, 0x3f, 0xfe, 0x07, 0x3f, 0x00, 0x1f, 0xf0, 0x1f, 0xfe,
-  0x07, 0x3f, 0x00, 0x1f, 0xf0, 0x1f, 0xfc, 0x03, 0x3f, 0x00, 0x1f, 0xe0,
-  0x1f, 0xfc, 0x03, 0x3f, 0x00, 0x1f, 0xe0, 0x1f, 0xfc, 0x03, 0x3f, 0x00,
-  0x1f, 0xe0, 0x1f, 0xfc, 0x03, 0x3f, 0x00, 0x1f, 0xe0, 0x0f, 0xf8, 0x03,
-  0x3f, 0x00, 0x1f, 0xe0, 0x0f, 0xf8, 0x01, 0x3f, 0x00, 0x1f, 0xc0, 0x0f,
-  0xf8, 0x01
-};
-
-#define ch1_width 45
-#define ch1_height 26
-static unsigned char ch1_bits[] = {
-  0x00, 0x1f, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0x00, 0x3f, 0x80, 0x1f,
-  0xf0, 0xff, 0x03, 0x3f, 0x80, 0x1f, 0xf8, 0xff, 0x07, 0x3f, 0x80, 0x1f,
-  0xfc, 0xff, 0x07, 0x3f, 0x80, 0x1f, 0xfc, 0xc0, 0x0f, 0x3f, 0x80, 0x1f,
-  0x7e, 0x80, 0x0f, 0x3f, 0x80, 0x1f, 0x7e, 0x80, 0x1f, 0x3f, 0x80, 0x1f,
-  0x3e, 0x80, 0x1f, 0x3f, 0x80, 0x1f, 0x3e, 0x00, 0x00, 0x3f, 0x80, 0x1f,
-  0x3f, 0x00, 0x00, 0x3f, 0x80, 0x1f, 0x3f, 0x00, 0x00, 0xff, 0xff, 0x1f,
-  0x3f, 0x00, 0x00, 0xff, 0xff, 0x1f, 0x3f, 0x00, 0x00, 0xff, 0xff, 0x1f,
-  0x3f, 0x00, 0x00, 0xff, 0xff, 0x1f, 0x3f, 0x00, 0x00, 0x3f, 0x80, 0x1f,
-  0x3e, 0x00, 0x00, 0x3f, 0x80, 0x1f, 0x3e, 0x80, 0x1f, 0x3f, 0x80, 0x1f,
-  0x7e, 0x80, 0x1f, 0x3f, 0x80, 0x1f, 0x7e, 0x80, 0x0f, 0x3f, 0x80, 0x1f,
-  0xfc, 0xc0, 0x0f, 0x3f, 0x80, 0x1f, 0xfc, 0xff, 0x0f, 0x3f, 0x80, 0x1f,
-  0xf8, 0xff, 0x07, 0x3f, 0x80, 0x1f, 0xf0, 0xff, 0x03, 0x3f, 0x80, 0x1f,
-  0xe0, 0xff, 0x00, 0x3f, 0x80, 0x1f, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x00
-};
-
-#define off_width 61
-#define off_height 26
-static unsigned char off_bits[] = {
-  0x00, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0x00, 0xfe,
-  0xff, 0xe1, 0xff, 0x1f, 0xf0, 0xff, 0x03, 0xfe, 0xff, 0xe1, 0xff, 0x1f,
-  0xf8, 0xff, 0x07, 0xfe, 0xff, 0xe1, 0xff, 0x1f, 0xf8, 0xff, 0x07, 0xfe,
-  0xff, 0xe1, 0xff, 0x1f, 0xfc, 0xc0, 0x0f, 0x7e, 0x00, 0xe0, 0x03, 0x00,
-  0x7e, 0x80, 0x1f, 0x7e, 0x00, 0xe0, 0x03, 0x00, 0x7e, 0x80, 0x1f, 0x7e,
-  0x00, 0xe0, 0x03, 0x00, 0x3e, 0x00, 0x1f, 0x7e, 0x00, 0xe0, 0x03, 0x00,
-  0x3e, 0x00, 0x1f, 0x7e, 0x00, 0xe0, 0x03, 0x00, 0x3f, 0x00, 0x3f, 0x7e,
-  0x00, 0xe0, 0x03, 0x00, 0x3f, 0x00, 0x3f, 0xfe, 0xff, 0xe1, 0xff, 0x0f,
-  0x3f, 0x00, 0x3f, 0xfe, 0xff, 0xe1, 0xff, 0x0f, 0x3f, 0x00, 0x3f, 0xfe,
-  0xff, 0xe1, 0xff, 0x0f, 0x3f, 0x00, 0x3f, 0xfe, 0xff, 0xe1, 0xff, 0x0f,
-  0x3f, 0x00, 0x3f, 0x7e, 0x00, 0xe0, 0x07, 0x00, 0x3e, 0x00, 0x1f, 0x7e,
-  0x00, 0xe0, 0x03, 0x00, 0x3e, 0x00, 0x1f, 0x7e, 0x00, 0xe0, 0x03, 0x00,
-  0x7e, 0x80, 0x1f, 0x7e, 0x00, 0xe0, 0x03, 0x00, 0x7e, 0x80, 0x1f, 0x7e,
-  0x00, 0xe0, 0x03, 0x00, 0xfc, 0xc0, 0x0f, 0x7e, 0x00, 0xe0, 0x03, 0x00,
-  0xf8, 0xff, 0x0f, 0x7e, 0x00, 0xe0, 0x03, 0x00, 0xf8, 0xff, 0x07, 0x7e,
-  0x00, 0xe0, 0x03, 0x00, 0xf0, 0xff, 0x03, 0x7e, 0x00, 0xe0, 0x03, 0x00,
-  0xc0, 0xff, 0x00, 0x7e, 0x00, 0xe0, 0x03, 0x00, 0x00, 0x1e, 0x00, 0x7e,
-  0x00, 0xe0, 0x03, 0x00
-};
-
-#define on_width 46
-#define on_height 26
-static unsigned char on_bits[] = {
-  0x00, 0x1e, 0x00, 0x00, 0x00, 0x00, 0xc0, 0xff, 0x00, 0x7e, 0x00, 0x3f,
-  0xf0, 0xff, 0x03, 0xfe, 0x00, 0x3f, 0xf8, 0xff, 0x07, 0xfe, 0x01, 0x3f,
-  0xf8, 0xff, 0x0f, 0xfe, 0x01, 0x3f, 0xfc, 0xc0, 0x0f, 0xfe, 0x03, 0x3f,
-  0x7e, 0x80, 0x1f, 0xfe, 0x03, 0x3f, 0x7e, 0x80, 0x1f, 0xfe, 0x07, 0x3f,
-  0x3e, 0x00, 0x1f, 0xfe, 0x07, 0x3f, 0x3e, 0x00, 0x1f, 0xfe, 0x0f, 0x3f,
-  0x3f, 0x00, 0x3f, 0x7e, 0x1f, 0x3f, 0x3f, 0x00, 0x3f, 0x7e, 0x1f, 0x3f,
-  0x3f, 0x00, 0x3f, 0x7e, 0x3e, 0x3f, 0x3f, 0x00, 0x3f, 0x7e, 0x3e, 0x3f,
-  0x3f, 0x00, 0x3f, 0x7e, 0x7c, 0x3f, 0x3f, 0x00, 0x3f, 0x7e, 0x78, 0x3f,
-  0x3e, 0x00, 0x1f, 0x7e, 0xf8, 0x3f, 0x3e, 0x00, 0x1f, 0x7e, 0xf0, 0x3f,
-  0x7e, 0x80, 0x1f, 0x7e, 0xf0, 0x3f, 0x7e, 0x80, 0x1f, 0x7e, 0xe0, 0x3f,
-  0xfc, 0xc0, 0x0f, 0x7e, 0xe0, 0x3f, 0xf8, 0xff, 0x0f, 0x7e, 0xc0, 0x3f,
-  0xf8, 0xff, 0x07, 0x7e, 0xc0, 0x3f, 0xf0, 0xff, 0x03, 0x7e, 0x80, 0x3f,
-  0xc0, 0xff, 0x00, 0x7e, 0x00, 0x3f, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x00
-};
-
-MbedI2C myi2c(p20, p21);
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &myi2c, 4);
-
+// Various constants thar are held in program memory so they do not consume RAM
 const PROGMEM int DEFAULT_IP_ADDRESS[4] = {192, 168, 1, 177};
 const PROGMEM char CONT_LENGTH_STR[] = "Content-Length:";
 const PROGMEM int CONT_LENGTH_STR_LEN = 15;
@@ -198,69 +123,79 @@ const PROGMEM char RESP_HTTP_404[] = "NOT FOUND";
 const PROGMEM char WEEK_DAY[][4] = {"---",  "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT", "+++"};
 const PROGMEM char INVALID_TIME[TIME_BUFF_LEN] = "---  --:--:--";
 const PROGMEM char INVALID_TIME_SHORT[TIME_BUFF_SHORT_LEN] = "---  --:--";
-const PROGMEM char TIME_STORE_C1_KEY[STORE_KEY_LEN] = "timeStoreC1";
-const PROGMEM char TIME_STORE_C1_TAG[3] = "CH";
-const PROGMEM unsigned int TIME_STORE_C1_ID = 1;
-const PROGMEM char TIME_STORE_C2_KEY[STORE_KEY_LEN] = "timeStoreC2";
-const PROGMEM char TIME_STORE_C2_TAG[3] = "HW";
-const PROGMEM unsigned int TIME_STORE_C2_ID = 2;
+const PROGMEM Icon TIME_STORE_ICON[TIME_STORE_COUNT] = {iconC1, iconC2} ;
+const PROGMEM char TIME_STORE_KEY[TIME_STORE_COUNT][STORE_KEY_LEN] = {"timeStoreC1", "timeStoreC2"} ;
+const PROGMEM char TIME_STORE_TAG[TIME_STORE_COUNT][3] = {"CH", "HW"};
+const PROGMEM int TIME_STORE_C1_INDEX = 0;
+const PROGMEM int TIME_STORE_C2_INDEX = 1;
+
 const PROGMEM char IP_ADDR_STORE_KEY[STORE_KEY_LEN] = "ipAddrStore";
 const PROGMEM unsigned int LOCAL_PORT = 8888;
 const PROGMEM int timeZone = 0;
 
+// Request tyoes. Detirmined when the request header is read from the network.
 enum REQ_TYPE {
   RT_NOT_FOUND, RT_UNKNOWN, RT_GET, RT_POST
 };
 REQ_TYPE requestType = RT_NOT_FOUND;
 
+// The various screens
 enum SCREEN_MODE {
   SM_STATUS, SM_SUMMARY, SM_CH1, SM_CH2, SM_OFF
 };
 SCREEN_MODE screenMode = SM_SUMMARY;
-SCREEN_MODE restoreScreenMode = SM_SUMMARY;
+SCREEN_MODE restoreScreenMode = SM_SUMMARY; // The screen mode when we wake up from screen saver
 
+// For each Channel schedule.
+//  Scheduled by the time store.
+//  Boosted - On for the next 1, 2 or 3 hours
+//  OFF - Always OFF
+//  ON - Always ON
 enum CHANNEL_MODE {
-  CM_SCHEDULED, CM_BOOST, CM_OFF, CM_ON
+  CM_SCHEDULED, CM_BOOST, CM_OFF
 };
 
-
-// Enter a MAC address and IP address for your controller below.
-// The IP address will be dependent on your local network:
 struct TimeStoreStruct {
-  int id;
+  int index;
   char key[STORE_KEY_LEN];
   char tag[3];
   uint16_t list[TIME_STORE_SIZE];
-  uint16_t boost = 0;
+  uint16_t boostMinutes = TIME_STORE_UNSET;
+  CHANNEL_MODE mode = CM_SCHEDULED;
   int count = 0;
   bool stateOn = false;
-  char onOff[4];
+  char onOff[6];
   char onOffTime[TIME_BUFF_SHORT_LEN];
 };
-
 
 // Initialize the Ethernet server library
 // with the IP address and port you want to use
 // (port 80 is default for HTTP):
 
-uint16_t ipAddressStore[4] = {0, 0, 0, 0};
+// Enter a MAC address and IP address for your controller below.
+// The IP address will be dependent on your local network:
 byte mac[] = {
   0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED
 };
 EthernetServer server(80);
 EthernetUDP ethernet_UDP;
 IPAddress ntpAddress;
+uint16_t ipAddressStore[4] = {0, 0, 0, 0};
+
+MbedI2C myi2c(p20, p21);
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &myi2c, 4);
 
 FlashIAPBlockDevice bd(XIP_BASE + 1024 * 1024, 1024 * 512);
 mbed::TDBStore eeprom(&bd);
 mbed::Watchdog &watchdog = mbed::Watchdog::get_instance();
 
-TimeStoreStruct timeStoreC1;
-TimeStoreStruct timeStoreC2;
+TimeStoreStruct timeStore[TIME_STORE_COUNT];
+
 TimeElements timeElements;
 
 char receiveBuff[RECEIVE_BUFF_LEN + 2]; // Receive buffer for IP requests
 char pathBuff[PATH_BUFF_LEN + 2];
+char pathItemBuff[PATH_BUFF_LEN + 2];
 char cTypeBuff[CONT_TYPE_BUFF_LEN + 2];
 char lastStatusBuff[LAST_STATUS_BUFF_LEN];
 char timeBuff[TIME_BUFF_LEN];
@@ -300,7 +235,7 @@ int scrSavYDir = 3;
 
 bool modeButtonState = false;
 
-Thread thread;
+rtos::Thread thread;
 
 void setup() {
   watchdog.start(WATCHDOG_TIMEOUT);
@@ -333,20 +268,11 @@ void setup() {
   delay(100);
 
   eeprom.init();
-
-  strcpy(timeStoreC1.key, TIME_STORE_C1_KEY);
-  strcpy(timeStoreC1.tag, TIME_STORE_C1_TAG);
-  timeStoreC1.id = TIME_STORE_C1_ID;
-  resetTimeData(timeStoreC1);
-  if (!getStoredTimeData(timeStoreC1)) {
-    storeTimeData(timeStoreC1);
-  }
-  strcpy(timeStoreC2.key, TIME_STORE_C2_KEY);
-  strcpy(timeStoreC2.tag, TIME_STORE_C2_TAG);
-  timeStoreC2.id = TIME_STORE_C2_ID;
-  resetTimeData(timeStoreC2);
-  if (!getStoredTimeData(timeStoreC2)) {
-    storeTimeData(timeStoreC2);
+  for (int tsIndex = 0; tsIndex < TIME_STORE_COUNT; tsIndex++) {
+    initTimeStore(tsIndex);
+    if (!getStoredTimeData(tsIndex)) {
+      storeTimeData(tsIndex);
+    }
   }
 
   // Start the Ethernet connection and the server:
@@ -355,7 +281,6 @@ void setup() {
   // Default ports are GP3 - MISO (TX) Master IN Slave OUT
   // Default ports are GP4 - MOSI (RX)
   Ethernet.init(5);
-
   if (getStoredIpAddress()) {
     IPAddress ipAddress = IPAddress(ipAddressStore[0], ipAddressStore[1], ipAddressStore[2], ipAddressStore[3]);
     Ethernet.begin(mac, ipAddress);
@@ -469,8 +394,9 @@ static void displayThread() {
         if (screenMode != SM_OFF) {
           displayTime();
         }
-        getNextActionTime(timeStoreC1);
-        getNextActionTime(timeStoreC2);
+        for (int tsIndex = 0; tsIndex < TIME_STORE_COUNT; tsIndex++) {
+          getNextActionTime(timeStore[tsIndex]);
+        }
         switch (screenMode) {
           case SM_STATUS:
             statusScreen();
@@ -479,10 +405,10 @@ static void displayThread() {
             summaryScreen();
             break;
           case SM_CH1:
-            channelScreen(timeStoreC1);
+            channelScreen(TIME_STORE_C1_INDEX);
             break;
           case SM_CH2:
-            channelScreen(timeStoreC2);
+            channelScreen(TIME_STORE_C2_INDEX);
             break;
         }
         display.display();
@@ -517,13 +443,13 @@ void loop() {
           contentCount++;
           if ((c == 10) || (c > 31)) {
             if (receiveBuffIndex < RECEIVE_BUFF_LEN) {
-              appendChar(c);
+              appendRespChar(c);
             }
           }
         } else {
           if (c >= 32) {
             if (receiveBuffIndex < RECEIVE_BUFF_LEN) {
-              appendChar(c);
+              appendRespChar(c);
             }
           }
           if (c == 10) {
@@ -557,29 +483,57 @@ void loop() {
   }
 }
 
+
+
 void sendGetResponse(EthernetClient client) {
   clearResp();
-  if (strcmp("/reset", pathBuff) == 0) {
-    appendChar('{');
+  int at = findPathItemInPath(0);
+  if (strcmp("reset", pathItemBuff) == 0) {
+    appendRespChar('{');
     appendQuoteEnt("reset", ':');
     appendResp("8}");
     sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
     haltDelayed("RESET!");
   }
-
-  if (strcmp("/time", pathBuff) == 0) {
-    appendChar('{');
+  if (strcmp("time", pathItemBuff) == 0) {
+    appendRespChar('{');
     appendQuoteEnt("time", ':');
     appendQuoteEnt(timeBuff, '}');
     sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
   } else {
-    if (strcmp("/index", pathBuff) == 0) {
+    if (strcmp("index", pathItemBuff) == 0) {
       sendIndexResponse(client);
     } else {
-      sendErrorResponse(client, 404, RESP_HTTP_404);
+      if (strcmp("boostC1", pathItemBuff) == 0) {
+        setChannelBoost(TIME_STORE_C1_INDEX, at);
+        sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
+        setScreenMode(SM_CH1);
+      } else {
+        if (strcmp("boostC2", pathItemBuff) == 0) {
+          setChannelBoost(TIME_STORE_C2_INDEX, at);
+          sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
+          setScreenMode(SM_CH2);
+        } else {
+          if (strcmp("offC1", pathItemBuff) == 0) {
+            setChannelOff(TIME_STORE_C1_INDEX);
+            sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
+            setScreenMode(SM_CH1);
+          } else {
+            if (strcmp("offC2", pathItemBuff) == 0) {
+              setChannelOff(TIME_STORE_C2_INDEX);
+              sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
+              setScreenMode(SM_CH2);
+            } else {
+              sendErrorResponse(client, 404, RESP_HTTP_404);
+            }
+          }
+        }
+      }
     }
   }
 }
+
+
 
 void sendPostResponse(EthernetClient client) {
   trimReceiveBuffer();
@@ -592,12 +546,12 @@ void sendPostResponse(EthernetClient client) {
     Serial.println(") ");
   }
   if (strcmp("/timedata1", pathBuff) == 0) {
-    readTimeDataFromPostData(timeStoreC1);
+    readTimeDataFromPostData(TIME_STORE_C1_INDEX);
     sendResponseWithBody(client, 201, RESP_HTTP_201, RESP_APP_JSON, "{\"timedata1\":201}");
     sendResponse(client, 201, RESP_HTTP_201, RESP_APP_JSON);
   }
   if (strcmp("/timedata2", pathBuff) == 0) {
-    readTimeDataFromPostData(timeStoreC2);
+    readTimeDataFromPostData(TIME_STORE_C2_INDEX);
     sendResponseWithBody(client, 201, RESP_HTTP_201, RESP_APP_JSON, "{\"timedata2\":201}");
     sendResponse(client, 201, RESP_HTTP_201, RESP_APP_JSON);
   }
@@ -605,6 +559,40 @@ void sendPostResponse(EthernetClient client) {
     readIpAddressFromPostData();
     sendResponseWithBody(client, 201, RESP_HTTP_201, RESP_APP_JSON, "{\"ipSet\":201}");
     haltDelayed("IP Address change!");
+  }
+}
+
+void setChannelOff(int tsIndex) {
+  timeStore[tsIndex].mode = CM_OFF;
+  timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
+  getNextActionTime(timeStore[tsIndex]);
+  appendRespChar('{');
+  appendQuoteEnt("id", ':');
+  appendQuoteEnt(timeStore[tsIndex].tag, ',');
+  appendQuoteEnt("state", ':');
+  appendQuoteEnt("OFF", '}');
+}
+
+void setChannelBoost(int tsIndex, int nextItem) {
+  int at = findPathItemInPath(nextItem);
+  int mins = atoi(pathItemBuff);
+  if (mins == 0) {
+    timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
+    timeStore[tsIndex].mode = CM_SCHEDULED;
+  } else {
+    uint16_t mow = deriveMinuteOfWeek();
+    timeStore[tsIndex].boostMinutes = mow + mins;
+    timeStore[tsIndex].mode = CM_BOOST;
+  }
+  getNextActionTime(timeStore[tsIndex]);
+  appendRespChar('{');
+  appendQuoteEnt("id", ':');
+  appendQuoteEnt(timeStore[tsIndex].tag, ',');
+  appendQuoteEnt("boost", ':');
+  if (mins == 0) {
+    appendQuoteEnt("RESET", '}');
+  } else {
+    appendQuoteEnt(timeStore[tsIndex].onOffTime, '}');
   }
 }
 
@@ -636,10 +624,11 @@ void readIpAddressFromPostData() {
   }
 }
 
-void readTimeDataFromPostData(TimeStoreStruct &ts) {
-  resetTimeData(ts);
+
+void readTimeDataFromPostData(int tsIndex) {
+  initTimeStore(tsIndex);
   Serial.print("POST: Read time data:");
-  Serial.println(ts.key);
+  Serial.println(timeStore[tsIndex].key);
   int index = 0;
   int tbIndex = 0;
   char c;
@@ -647,7 +636,7 @@ void readTimeDataFromPostData(TimeStoreStruct &ts) {
     c = receiveBuff[i];
     if ((c == ',') || (c == ']')) {
       if (tbIndex > 0) {
-        ts.list[index] = atoi(tempBuff);
+        timeStore[tsIndex].list[index] = atoi(tempBuff);
         index++;
       }
       tbIndex = 0;
@@ -659,21 +648,21 @@ void readTimeDataFromPostData(TimeStoreStruct &ts) {
       }
     }
     if ((c == 0) || (c == ']') || (index >= (TIME_STORE_SIZE))) {
-      storeTimeData(ts);
+      storeTimeData(tsIndex);
       break;
     }
   }
-  countTimeData(ts);
+  countTimeData(tsIndex);
 }
 
 void sendErrorResponse(EthernetClient client, const int code, const char* msg) {
-  appendChar('{');
+  appendRespChar('{');
   appendQuoteEnt("error", ':');
   appendQuoteEnt(msg, ',');
   appendQuoteEnt("code", ':');
   itoa(code, tempBuff, 10);
   appendResp(tempBuff);
-  appendChar(',');
+  appendRespChar(',');
   appendQuoteEnt("path", ':');
   appendQuoteEnt(pathBuff, '}');
   sendResponse(client, code, msg, RESP_APP_JSON);
@@ -838,54 +827,78 @@ void setScreenMode(SCREEN_MODE mode) {
   }
 }
 
+void drawIcon(int x, int y, int bw, Icon ic, bool invert, bool off) {
+  if (invert) {
+    display.fillRect(x, y, ic.w + bw,  ic.h + 4, 1);
+    display.drawXBitmap(x + (bw / 2) , y + 2, ic.bits, ic.w,  ic.h, 0);
+    if (off) {
+      display.drawXBitmap(x + (bw / 2) , y + 2, iconXXX.bits, iconXXX.w,  iconXXX.h, 0);
+    }
+  } else {
+    display.fillRect(x, y, ic.w + bw,  ic.h + 4, 0);
+    display.drawXBitmap(x + (bw / 2) , y + 2, ic.bits, ic.w,  ic.h, 1);
+    if (off) {
+      display.drawXBitmap(x + (bw / 2) , y + 2, iconXXX.bits, iconXXX.w,  iconXXX.h, 1);
+    }
+  }
+}
+
 void summaryScreen() {
   display.setTextSize(2);
   display.setTextColor(1);
-  int w2 = (SCREEN_WIDTH / 2);
   display.fillRect(0, TITLE_HEIGHT, SCREEN_WIDTH, MAIN_HEIGHT , 0);
-  if (timeStoreC2.stateOn) {
-    display.fillRect(0, TITLE_HEIGHT, w2,  ch2_height + 5, 1);
-    display.drawXBitmap(5, LINE_1X_Y, ch2_bits, ch2_width, ch2_height, 0);
-    display.setCursor(20, LINE_2X_Y);
-  } else {
-    display.drawXBitmap(5, LINE_1X_Y, ch2_bits, ch2_width, ch2_height, 1);
-    display.setCursor(16, LINE_2X_Y);
+  bool isOff = timeStore[TIME_STORE_C2_INDEX].mode == CM_OFF;
+  drawIcon( 0, LINE_1X_Y, 6, TIME_STORE_ICON[TIME_STORE_C2_INDEX], timeStore[TIME_STORE_C2_INDEX].stateOn, isOff);
+  if (timeStore[TIME_STORE_C2_INDEX].mode != CM_OFF) {
+    if (timeStore[TIME_STORE_C2_INDEX].stateOn) {
+      if (timeStore[TIME_STORE_C2_INDEX].mode == CM_BOOST) {
+        display.setCursor(2, LINE_2X_Y);
+      } else {
+        display.setCursor(20, LINE_2X_Y);
+      }
+    } else {
+      display.setCursor(16, LINE_2X_Y);
+    }
+    display.print(timeStore[TIME_STORE_C2_INDEX].onOff);
   }
-  display.print(timeStoreC2.onOff);
-
-  if (timeStoreC1.stateOn) {
-    display.fillRect(w2 + 10, TITLE_HEIGHT, w2 - 10,  ch2_height + 5, 1);
-    display.drawXBitmap(w2 + 14, LINE_1X_Y, ch1_bits, ch1_width, ch1_height, 0);
-    display.setCursor(w2 + 25, LINE_2X_Y);
-  } else {
-    display.drawXBitmap(w2 + 14, LINE_1X_Y, ch1_bits, ch1_width, ch1_height, 1);
-    display.setCursor(w2 + 20, LINE_2X_Y);
+  isOff = timeStore[TIME_STORE_C1_INDEX].mode == CM_OFF;
+  drawIcon(SCREEN_HALF, LINE_1X_Y, 6, TIME_STORE_ICON[TIME_STORE_C1_INDEX], timeStore[TIME_STORE_C1_INDEX].stateOn, isOff);
+  if (timeStore[TIME_STORE_C1_INDEX].mode != CM_OFF) {
+    if (timeStore[TIME_STORE_C1_INDEX].stateOn) {
+      if (timeStore[TIME_STORE_C1_INDEX].mode == CM_BOOST) {
+        display.setCursor(SCREEN_HALF + 2, LINE_2X_Y);
+      } else {
+        display.setCursor(SCREEN_HALF + 20, LINE_2X_Y);
+      }
+    } else {
+      display.setCursor(SCREEN_HALF + 16, LINE_2X_Y);
+    }
+    display.print(timeStore[TIME_STORE_C1_INDEX].onOff);
   }
-  display.print(timeStoreC1.onOff);
   display.setTextSize(1);
 }
 
-void channelScreen(TimeStoreStruct &ts) {
-  if (ts.id == TIME_STORE_C1_ID) {
-    display.drawXBitmap(0, LINE_1X_Y, ch1_bits, ch1_width, ch1_height, 1);
+void channelScreen(int tsIndex) {
+  display.fillRect(0, TITLE_HEIGHT, SCREEN_WIDTH, MAIN_HEIGHT , 0);
+  bool isOff = timeStore[tsIndex].mode == CM_OFF;
+  drawIcon( 0, LINE_1X_Y, 4, TIME_STORE_ICON[tsIndex], false, isOff);
+  if (timeStore[tsIndex].stateOn) {
+    if (timeStore[tsIndex].mode = CM_BOOST) {
+      drawIcon( SCREEN_HALF, LINE_1X_Y, 4, iconBoost, true, isOff);
+    } else {
+      drawIcon( SCREEN_HALF, LINE_1X_Y, 4, iconOn, true, isOff);
+    }
   } else {
-    display.drawXBitmap(0, LINE_1X_Y, ch2_bits, ch2_width, ch2_height, 1);
-  }
-  if (ts.stateOn) {
-    display.fillRect(SCREEN_WIDTH - off_width - 2, LINE_1X_Y - 1 , on_width + 4,  off_height + 2, 1);
-    display.drawXBitmap(SCREEN_WIDTH - off_width, LINE_1X_Y, on_bits, on_width, on_height, 0);
-  } else {
-    display.fillRect(SCREEN_WIDTH - off_width, LINE_1X_Y, off_width,  off_height, 0);
-    display.drawXBitmap(SCREEN_WIDTH - off_width, LINE_1X_Y, off_bits, off_width, off_height, 1);
+    drawIcon( SCREEN_HALF, LINE_1X_Y, 4, iconOff, false, false);
   }
   display.setTextSize(2);
   display.setTextColor(1);
   display.setCursor(0, LINE_2X_Y);
-  display.print(ts.onOffTime[0]);
-  display.print(ts.onOffTime[1]);
-  display.print(ts.onOffTime[2]);
+  display.print(timeStore[tsIndex].onOffTime[0]);
+  display.print(timeStore[tsIndex].onOffTime[1]);
+  display.print(timeStore[tsIndex].onOffTime[2]);
   display.setCursor(SCREEN_WIDTH - off_width, LINE_2X_Y);
-  display.print(&ts.onOffTime[4]);
+  display.print(&timeStore[tsIndex].onOffTime[4]);
   display.setTextSize(1);
 }
 
@@ -894,22 +907,22 @@ void statusScreen() {
   display.setTextColor(1);
   display.setCursor(2, LINE_1_Y + 2);
   display.print(lastStatusBuff);
-  display.fillRect(0, LINE_2_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, timeStoreC1.stateOn ? 1 : 0);
-  display.setTextColor(timeStoreC1.stateOn ? 0 : 1);
+  display.fillRect(0, LINE_2_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, timeStore[TIME_STORE_C1_INDEX].stateOn ? 1 : 0);
+  display.setTextColor(timeStore[TIME_STORE_C1_INDEX].stateOn ? 0 : 1);
   display.drawRect(0, LINE_2_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, 1);
 
   display.setCursor(2, LINE_2_Y + 2);
-  display.print(timeStoreC1.tag);
+  display.print(timeStore[TIME_STORE_C1_INDEX].tag);
   display.print(": Untill ");
-  display.print(timeStoreC1.onOffTime);
-  display.fillRect(0, LINE_3_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, timeStoreC2.stateOn ? 1 : 0);
-  display.setTextColor(timeStoreC2.stateOn ? 0 : 1);
+  display.print(timeStore[TIME_STORE_C1_INDEX].onOffTime);
+  display.fillRect(0, LINE_3_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, timeStore[TIME_STORE_C2_INDEX].stateOn ? 1 : 0);
+  display.setTextColor(timeStore[TIME_STORE_C2_INDEX].stateOn ? 0 : 1);
   display.drawRect(0, LINE_3_Y, SCREEN_WIDTH, LINE_HEIGHT - 1, 1);
 
   display.setCursor(2, LINE_3_Y + 2);
-  display.print(timeStoreC2.tag);
+  display.print(timeStore[TIME_STORE_C2_INDEX].tag);
   display.print(": Untill ");
-  display.print(timeStoreC2.onOffTime);
+  display.print(timeStore[TIME_STORE_C2_INDEX].onOffTime);
   displayIp(LINE_4_Y);
 }
 
@@ -1028,6 +1041,24 @@ void updateIpAddressBuffer() {
   pushIntToBuff(ipAddressBuffer, Ethernet.localIP()[3], 16, 3, 0);
 }
 
+int findPathItemInPath(int start) {
+  int posIn = start;
+  int posOut = 0;
+  char c = pathBuff[posIn];
+  if (!(((c >= '0') && (c <= '9')) || ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || (c == '.') || (c == ',')))  {
+    posIn++;
+    c = pathBuff[posIn];
+  }
+  while (((c >= '0') && (c <= '9')) || ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || (c == '.') || (c == ',')) {
+    pathItemBuff[posOut] = c;
+    posOut++;
+    posIn++;
+    c = pathBuff[posIn];
+  }
+  pathItemBuff[posOut] = 0;
+  return posIn;
+}
+
 int matchAt(int start, const char* with, int matchLen) {
   if (matchLen < 1) {
     return 0;
@@ -1037,7 +1068,7 @@ int matchAt(int start, const char* with, int matchLen) {
       return 0;
     }
   }
-  return matchLen;
+  return start + matchLen;
 }
 
 int findStr(int start, const char* needle, int matchLen) {
@@ -1121,11 +1152,11 @@ void clearResp() {
 
 
 void appendQuoteEnt(const char* str, const char sep) {
-  appendChar('"');
+  appendRespChar('"');
   appendResp(str);
-  appendChar('"');
+  appendRespChar('"');
   if (sep != ' ') {
-    appendChar(sep);
+    appendRespChar(sep);
   }
 }
 
@@ -1133,13 +1164,13 @@ void appendResp(const char* str) {
   int i = 0;
   char c = str[i];
   while (c != 0) {
-    appendChar(c);
+    appendRespChar(c);
     i++;
     c = str[i];
   }
 }
 
-void appendChar(const char c)  {
+void appendRespChar(const char c)  {
   if (receiveBuffIndex <= RECEIVE_BUFF_LEN) {
     receiveBuff[receiveBuffIndex] = c;
     receiveBuffIndex++;
@@ -1147,28 +1178,33 @@ void appendChar(const char c)  {
   }
 }
 
-void resetTimeData(TimeStoreStruct &ts) {
+void initTimeStore(int tsIndex) {
   for (int i = 0; i < TIME_STORE_SIZE; i++) {
-    ts.list[i] = TIME_STORE_UNSET;
+    timeStore[tsIndex].list[i] = TIME_STORE_UNSET;
   }
-  ts.stateOn = false;
-  ts.count = 0;
-  strcpy(ts.onOff, "OFF");
-  strcpy(ts.onOffTime, INVALID_TIME_SHORT);
+  timeStore[tsIndex].stateOn = false;
+  timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
+  timeStore[tsIndex].mode = CM_SCHEDULED;
+  timeStore[tsIndex].count = 0;
+  strcpy(timeStore[tsIndex].key, TIME_STORE_KEY[tsIndex]);
+  strcpy(timeStore[tsIndex].tag, TIME_STORE_TAG[tsIndex]);
+
+  strcpy(timeStore[tsIndex].onOff, "OFF");
+  strcpy(timeStore[tsIndex].onOffTime, INVALID_TIME_SHORT);
   if (Serial) {
-    Serial.print(ts.key);
+    Serial.print(timeStore[tsIndex].key);
     Serial.println(" - Data reset");
   }
 }
 
-void countTimeData(TimeStoreStruct &ts) {
+void countTimeData(int tsIndex) {
   int c = 0;
   for (int i = 0; i < TIME_STORE_SIZE; i++) {
-    if (ts.list[i] < TIME_STORE_UNSET) {
+    if (timeStore[tsIndex].list[i] < TIME_STORE_UNSET) {
       c++;
     }
   }
-  ts.count = c;
+  timeStore[tsIndex].count = c;
 }
 
 int sortDesc(const void *cmp1, const void *cmp2)
@@ -1178,14 +1214,14 @@ int sortDesc(const void *cmp1, const void *cmp2)
   return a > b ? 1 : (a < b ? -1 : 0);
 }
 
-void storeTimeData(TimeStoreStruct &ts) {
-  qsort(ts.list, TIME_STORE_SIZE, sizeof(ts.list[0]), sortDesc);
-  countTimeData(ts);
-  eeprom.set(ts.key, ts.list, sizeof(ts.list) , 0);
+void storeTimeData(int tsIndex) {
+  qsort(timeStore[tsIndex].list, TIME_STORE_SIZE, sizeof(timeStore[tsIndex].list[0]), sortDesc);
+  countTimeData(tsIndex);
+  eeprom.set(timeStore[tsIndex].key, timeStore[tsIndex].list, sizeof(timeStore[tsIndex].list) , 0);
   if (Serial) {
-    Serial.print(ts.key);
+    Serial.print(timeStore[tsIndex].key);
     Serial.print(" ");
-    Serial.print(ts.count);
+    Serial.print(timeStore[tsIndex].count);
     Serial.println(" - items Stored (sorted)");
   }
 }
@@ -1218,9 +1254,24 @@ void setStoredIpAddress() {
   }
 }
 
-
 void getNextActionTime(TimeStoreStruct &ts) {
   uint16_t mow = deriveMinuteOfWeek();
+  switch (ts.mode) {
+    case CM_OFF:
+      ts.stateOn = false;
+      strcpy(ts.onOff, "OFF");
+      strcpy(ts.onOffTime, INVALID_TIME_SHORT);
+      return;
+    case CM_BOOST:
+      if ((ts.boostMinutes < TIME_STORE_UNSET) && (ts.boostMinutes > mow)) {
+        ts.stateOn = true;
+        strcpy(ts.onOff, "BOOST");
+        updateTimeBuff(ts.onOffTime, (minuteZero + ts.boostMinutes) * 60, false);
+        return;
+      }
+  }
+  ts.mode = CM_SCHEDULED;
+  ts.boostMinutes = TIME_STORE_UNSET;
   bool stOn = false;
   for (int i = 0; i < TIME_STORE_SIZE; i++) {
     if (ts.list[i] < TIME_STORE_UNSET) {
@@ -1244,24 +1295,24 @@ void getNextActionTime(TimeStoreStruct &ts) {
   strcpy(ts.onOffTime, INVALID_TIME_SHORT);
 }
 
-bool getStoredTimeData(TimeStoreStruct &ts) {
+bool getStoredTimeData(int tsIndex) {
   mbed::KVStore::info_t info;
-  if (eeprom.get_info(ts.key, &info) != MBED_ERROR_ITEM_NOT_FOUND) {
-    eeprom.get(ts.key, ts.list, sizeof(ts.list));
-    countTimeData(ts);
+  if (eeprom.get_info(timeStore[tsIndex].key, &info) != MBED_ERROR_ITEM_NOT_FOUND) {
+    eeprom.get(timeStore[tsIndex].key, timeStore[tsIndex].list, sizeof(timeStore[tsIndex].list));
+    countTimeData(tsIndex);
     if (Serial) {
-      Serial.print(ts.key);
+      Serial.print(timeStore[tsIndex].key);
       Serial.print(" ");
-      Serial.print(ts.count);
+      Serial.print(timeStore[tsIndex].count);
       Serial.println(" - items Loaded");
     }
     return true;
   } else {
     if (Serial) {
-      Serial.print(ts.key);
+      Serial.print(timeStore[tsIndex].key);
       Serial.println(" - Data Not Found");
     }
-    countTimeData(ts);
+    countTimeData(tsIndex);
     return false;
   }
 }
