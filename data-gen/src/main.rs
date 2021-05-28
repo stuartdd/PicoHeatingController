@@ -1,7 +1,10 @@
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
+use std::time::Duration;
+
 use std::env;
+use ureq;
 
 const MINS_1_DAY: u32 = 1440;
 const HR:u32 = 60;
@@ -14,26 +17,56 @@ fn main() {
     let args: Vec<String> = env::args().collect(); 
     let mut times: Vec<u32> = Vec::with_capacity(10);
     let mut file_name: &str = "";
+    let mut host_string: &str = "http://192.168.1.177";
+    let mut test_mode: bool = false;
     for index in 1..args.len() {
-        if args[index].starts_with("file:") {
-            file_name = &args[index][5..];  
-            println!("Data Gen: Output file: {}",file_name);
+        if args[index].starts_with("test:") {
+            test_mode = true;
+        } 
+        if !test_mode {
+            if args[index].starts_with("file:") {
+                file_name = &args[index][5..];  
+                println!("Data Gen: Output file: {}",file_name);
+            } else {
+                times.push(parse_time_to_mins(&args[index]));
+            }    
         } else {
-            times.push(parse_time_to_mins(&args[index]));
+            if args[index].starts_with("host:") {
+                host_string = &args[index][5..];
+            }
         }
     }
-    if file_name == "" {
-        panic!("file:<filename> argument was not specified");
+    if test_mode {
+        
+        let body: String = do_get(host_string, "HW/state").unwrap();
+        print!("Body:{} ",body);
+
+    } else {
+        if file_name == "" {
+            panic!("file:<filename> argument was not specified");
+        }
+        if times.len() == 0 {
+            panic!("No times were specified");
+        }
+        print!("Input Times: {} values [", times.len());
+        for ti in times.iter() {
+            print!("{} ",ti);
+        }
+        println!("]");
+        create_values(times, file_name);    
     }
-    if times.len() == 0 {
-        panic!("No times were specified");
-    }
-    print!("Input Times: {} values [", times.len());
-    for ti in times.iter() {
-        print!("{} ",ti);
-    }
-    println!("]");
-    create_values(times, file_name);
+}
+
+fn do_get(host: &str, path: &str) -> Result<String, ureq::Error> {
+    let full_url: String = format!("{}/{}",host, path);
+    println!("Testing url:{}",full_url);
+    let res: String = ureq::get(full_url.as_str())
+    .set("Content-Type", "application/json")
+    .set("Client", "data-gen.rs")
+    .timeout(Duration::from_secs(5))
+    .call()?
+    .into_string()?;
+    Ok(res)
 }
 
 fn parse_time_to_mins(s: &str) -> u32 {

@@ -81,13 +81,15 @@
 // Define various buffer lengths.
 #define RECEIVE_BUFF_LEN 400
 #define PATH_BUFF_LEN 50
-#define TEMP_BUFF_LEN 20
-#define CONT_TYPE_BUFF_LEN 40
+#define TEMP_BUFF_LEN 50
+#define CONT_TYPE_BUFF_LEN 50
 #define HALT_REASON_BUFF_LEN 21
 #define LAST_STATUS_BUFF_LEN 21
 #define IP_ADDR_BUFF_LEN 21
 #define TIME_BUFF_LEN 14
 #define TIME_BUFF_SHORT_LEN 11
+#define ON_OFF_TIME_BUFF_LEN 11
+#define ON_OFF_BUFF_LEN 11
 #define NTP_BUFF_LEN 48
 #define STORE_KEY_LEN 15
 
@@ -141,6 +143,7 @@ const PROGMEM char RESP_HTTP_V[] = "HTTP/1.1 ";
 const PROGMEM char RESP_HTTP_200[] = "OK";
 const PROGMEM char RESP_HTTP_201[] = "CREATED";
 const PROGMEM char RESP_HTTP_404[] = "NOT FOUND";
+const PROGMEM char RESP_HTTP_416[] = "Range Not Satisfiable";
 const PROGMEM char WEEK_DAY[][4] = {"---",  "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT", "+++"};
 const PROGMEM char INVALID_TIME[TIME_BUFF_LEN] = "---  --:--:--";
 const PROGMEM char INVALID_TIME_SHORT[TIME_BUFF_SHORT_LEN] = "---  --:--";
@@ -158,18 +161,14 @@ const PROGMEM char IP_ADDR_STORE_KEY[STORE_KEY_LEN] = "ipAddrStore";
 const PROGMEM unsigned int LOCAL_PORT = 8888;
 const PROGMEM int timeZone = 0;
 
-
-
-
 struct TimeStoreStruct {
   int index;
   uint16_t list[TIME_STORE_SIZE];
   uint16_t boostMinutes = TIME_STORE_UNSET;
   CHANNEL_MODE mode = CM_SCHEDULED;
-  int count = 0;
   bool stateOn = false;
-  char onOff[6];
-  char onOffTime[TIME_BUFF_SHORT_LEN];
+  char onOff[ON_OFF_BUFF_LEN];
+  char onOffTime[ON_OFF_TIME_BUFF_LEN];
 };
 
 // Initialize the Ethernet server library
@@ -222,7 +221,6 @@ unsigned long sleepTimerEvent = 0;
 unsigned long scrSavTimerEvent = 0;
 unsigned long buttonScanTimerEvent = 0;
 unsigned long statusScreenTimeoutEvent = 0;
-
 unsigned long haltTimerEvent = 0;
 unsigned long serialTimeout = 0;
 unsigned long ledTimerEvent = 0;
@@ -250,13 +248,16 @@ void setup() {
   digitalWrite(LED_BUILTIN, HIGH);
 
   // Open serial communications and wait for port to open:
-  serialTimeout = millis() + 1000;
+  serialTimeout = millis() + 5000;
   Serial.begin(115200);
   while (!Serial) {
     delay(100);
     if (millis()  > serialTimeout) {
       break;
     }
+  }
+  if (Serial) {
+    Serial.println("Serial OK");
   }
   //
   // Set the speed for the Display I2C clock.
@@ -272,10 +273,15 @@ void setup() {
   delay(100);
 
   eeprom.init();
+  delay(100);
+  if (digitalRead(MODE_BUTTON_PIN) == LOW) {
+    eeprom.reset();
+  }
+
   for (int tsIndex = 0; tsIndex < TIME_STORE_COUNT; tsIndex++) {
     initTimeStore(tsIndex);
     if (!getStoredTimeData(tsIndex)) {
-      storeTimeData(tsIndex);
+      //storeTimeData(tsIndex);
     }
   }
 
@@ -497,71 +503,47 @@ void sendGetResponse(EthernetClient client) {
     appendResp("8}");
     sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
     haltDelayed("RESET!");
+    return;
   }
   if (strcmp("time", pathItemBuff) == 0) {
     appendRespChar('{');
     appendQuoteEnt("time", ':');
     appendQuoteEnt(timeBuff, '}');
     sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
+    return;
+  }
+  if (strcmp("index", pathItemBuff) == 0) {
+    sendIndexResponse(client);
+    return;
+  }
+  //
+  // Derive the index from the first element in the request.
+  // Can be HW,C1,CH,C2 etc from TIME_STORE_TAG or TIME_STORE_ID
+  // If found then skip the element in the request
+  //
+  int tsIndex = getIndexFromPathItem();
+  if (tsIndex < 0) {
+    sendErrorResponse(client, 416, RESP_HTTP_416, "Invalid Device");
   } else {
-    if (strcmp("index", pathItemBuff) == 0) {
-      sendIndexResponse(client);
+    at = nextPathItemInPath(at);
+    if (strcmp("boost", pathItemBuff) == 0) {
+      setChannelBoost(tsIndex, at);
+      setScreenModeWithIndex(tsIndex);
+      initRespJson(tsIndex, true);
+      sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
     } else {
-      //
-      // Derive the index from the first element in the request.
-      // Can be HW,C1,CH,C2 etc from TIME_STORE_TAG or TIME_STORE_ID
-      //
-      int tsIndex = -1;
-      for (int i = 0 ; i < TIME_STORE_COUNT; i++) {
-        if (strcmp(TIME_STORE_TAG[i], pathItemBuff) == 0) {
-          tsIndex = i;
-          break;
-        }
-      }
-      //
-      // If not in TIME_STORE_TAG try TIME_STORE_ID
-      //
-      if (tsIndex < 0) {
-        for (int i = 0 ; i < TIME_STORE_COUNT; i++) {
-          if (strcmp(TIME_STORE_ID[i], pathItemBuff) == 0) {
-            tsIndex = i;
-            break;
-          }
-        }
-      }
-      //
-      // If found then skip the element in the request
-      //
-      if (tsIndex >= 0) {
-        at = nextPathItemInPath(at);
-      }
-      Serial.print("REQ:");
-      Serial.print(tsIndex);
-      if (tsIndex >= 0) {
-        Serial.print("TAG:");
-        Serial.print(TIME_STORE_TAG[tsIndex]);
-      }
-      Serial.print("NEXT:");
-      Serial.println(pathItemBuff);
-      if (strcmp("boost", pathItemBuff) == 0) {
-        setChannelBoost(tsIndex, at);
+      if (strcmp("off", pathItemBuff) == 0) {
+        setChannelOff(tsIndex);
         setScreenModeWithIndex(tsIndex);
         initRespJson(tsIndex, true);
         sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
       } else {
-        if (strcmp("off", pathItemBuff) == 0) {
-          setChannelOff(tsIndex);
+        if (strcmp("state", pathItemBuff) == 0) {
           setScreenModeWithIndex(tsIndex);
           initRespJson(tsIndex, true);
           sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
         } else {
-          if (strcmp("state", pathItemBuff) == 0) {
-            setScreenMode(SM_STATUS);
-            initRespJson(tsIndex, true);
-            sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
-          } else {
-            sendErrorResponse(client, 404, RESP_HTTP_404);
-          }
+          sendErrorResponse(client, 404, RESP_HTTP_404, "Unknown path");
         }
       }
     }
@@ -569,7 +551,7 @@ void sendGetResponse(EthernetClient client) {
 }
 
 void sendPostResponse(EthernetClient client) {
-  trimReceiveBuffer();
+  int at = nextPathItemInPath(0);
   if (Serial) {
     Serial.println("*** POST ***");
     Serial.print("Content-Length(");
@@ -578,20 +560,32 @@ void sendPostResponse(EthernetClient client) {
     Serial.print(String(cTypeBuff));
     Serial.println(") ");
   }
-  if (strcmp("/timedata1", pathBuff) == 0) {
-    readTimeDataFromPostData(TIME_STORE_C1_INDEX);
-    sendResponseWithBody(client, 201, RESP_HTTP_201, RESP_APP_JSON, "{\"timedata1\":201}");
-    sendResponse(client, 201, RESP_HTTP_201, RESP_APP_JSON);
-  }
-  if (strcmp("/timedata2", pathBuff) == 0) {
-    readTimeDataFromPostData(TIME_STORE_C2_INDEX);
-    sendResponseWithBody(client, 201, RESP_HTTP_201, RESP_APP_JSON, "{\"timedata2\":201}");
-    sendResponse(client, 201, RESP_HTTP_201, RESP_APP_JSON);
-  }
-  if (strcmp("/ip", pathBuff) == 0) {
+  if (strcmp("ip", pathItemBuff) == 0) {
+    trimReceiveBuffer();
     readIpAddressFromPostData();
-    sendResponseWithBody(client, 201, RESP_HTTP_201, RESP_APP_JSON, "{\"ipSet\":201}");
+    sendResponseWithBody(client, 201, RESP_HTTP_201, RESP_APP_JSON, "{\"ip\":201}");
     haltDelayed("IP Address change!");
+    return;
+  }
+  //
+  // Derive the index from the first element in the request.
+  // Can be HW,C1,CH,C2 etc from TIME_STORE_TAG or TIME_STORE_ID
+  // If found then skip the element in the request
+  //
+  int tsIndex = getIndexFromPathItem();
+  if (tsIndex < 0) {
+    sendErrorResponse(client, 416, RESP_HTTP_416, "Invalid Device");
+  } else {
+    at = nextPathItemInPath(at);
+    if (strcmp("schedule", pathItemBuff) == 0) {
+      readTimeDataFromPostData(tsIndex);
+      initRespJsonStart(tsIndex, false);
+      appendQuoteEnt("schedule", ':');
+      appendQuoteEnt("OK", '}');
+      sendResponse(client, 201, RESP_HTTP_201, RESP_APP_JSON);
+    } else {
+      sendErrorResponse(client, 404, RESP_HTTP_404, "Unknown path");
+    }
   }
 }
 
@@ -614,6 +608,27 @@ void setChannelBoost(int tsIndex, int nextItem) {
     timeStore[tsIndex].mode = CM_BOOST;
   }
   getNextActionTime(timeStore[tsIndex]);
+}
+
+
+int getIndexFromPathItem() {
+  //
+  // If not in TIME_STORE_TAG try TIME_STORE_ID
+  //
+  for (int i = 0 ; i < TIME_STORE_COUNT; i++) {
+    if (strcmp(TIME_STORE_TAG[i], pathItemBuff) == 0) {
+      return i;
+    }
+  }
+  //
+  // If not in TIME_STORE_TAG try TIME_STORE_ID
+  //
+  for (int i = 0 ; i < TIME_STORE_COUNT; i++) {
+    if (strcmp(TIME_STORE_ID[i], pathItemBuff) == 0) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 void readIpAddressFromPostData() {
@@ -672,16 +687,19 @@ void readTimeDataFromPostData(int tsIndex) {
       break;
     }
   }
-  countTimeData(tsIndex);
 }
 
-void initRespJson(int tsIndex, bool closeJson) {
+void initRespJsonStart(int tsIndex, bool closeJson) {
   clearResp();
   appendRespChar('{');
   appendQuoteEnt("id", ':');
   appendQuoteEnt(TIME_STORE_ID[tsIndex], ',');
   appendQuoteEnt("tag", ':');
-  appendQuoteEnt(TIME_STORE_TAG[tsIndex], ',');
+  appendQuoteEnt(TIME_STORE_TAG[tsIndex], closeJson ? '}' : ',');
+}
+
+void initRespJson(int tsIndex, bool closeJson) {
+  initRespJsonStart(tsIndex, false);
   appendQuoteEnt("mode", ':');
   switch (timeStore[tsIndex].mode) {
     case CM_OFF:
@@ -704,14 +722,11 @@ void initRespJson(int tsIndex, bool closeJson) {
   appendQuoteEnt(timeStore[tsIndex].onOffTime, ',');
 
   appendQuoteEnt("time", ':');
-  if (closeJson) {
-    appendQuoteEnt(timeBuff, '}');
-  } else {
-    appendQuoteEnt(timeBuff, ',');
-  }
+  appendQuoteEnt(timeBuff, closeJson ? '}' : ',');
 }
 
-void sendErrorResponse(EthernetClient client, const int code, const char* msg) {
+void sendErrorResponse(EthernetClient client, const int code, const char* msg, const char* reason) {
+  clearResp();
   appendRespChar('{');
   appendQuoteEnt("error", ':');
   appendQuoteEnt(msg, ',');
@@ -720,7 +735,9 @@ void sendErrorResponse(EthernetClient client, const int code, const char* msg) {
   appendResp(tempBuff);
   appendRespChar(',');
   appendQuoteEnt("path", ':');
-  appendQuoteEnt(pathBuff, '}');
+  appendQuoteEnt(pathBuff, ',');
+  appendQuoteEnt("reason", ':');
+  appendQuoteEnt(reason, '}');
   sendResponse(client, code, msg, RESP_APP_JSON);
 }
 
@@ -1245,7 +1262,6 @@ void initTimeStore(int tsIndex) {
   timeStore[tsIndex].stateOn = false;
   timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
   timeStore[tsIndex].mode = CM_SCHEDULED;
-  timeStore[tsIndex].count = 0;
   strcpy(timeStore[tsIndex].onOff, "OFF");
   strcpy(timeStore[tsIndex].onOffTime, INVALID_TIME_SHORT);
   if (Serial) {
@@ -1254,14 +1270,14 @@ void initTimeStore(int tsIndex) {
   }
 }
 
-void countTimeData(int tsIndex) {
+int countTimeData(int tsIndex) {
   int c = 0;
   for (int i = 0; i < TIME_STORE_SIZE; i++) {
     if (timeStore[tsIndex].list[i] < TIME_STORE_UNSET) {
       c++;
     }
   }
-  timeStore[tsIndex].count = c;
+  return c;
 }
 
 int sortDesc(const void *cmp1, const void *cmp2)
@@ -1273,12 +1289,11 @@ int sortDesc(const void *cmp1, const void *cmp2)
 
 void storeTimeData(int tsIndex) {
   qsort(timeStore[tsIndex].list, TIME_STORE_SIZE, sizeof(timeStore[tsIndex].list[0]), sortDesc);
-  countTimeData(tsIndex);
   eeprom.set(TIME_STORE_KEY[tsIndex], timeStore[tsIndex].list, sizeof(timeStore[tsIndex].list) , 0);
   if (Serial) {
     Serial.print(TIME_STORE_KEY[tsIndex]);
     Serial.print(" ");
-    Serial.print(timeStore[tsIndex].count);
+    Serial.print(countTimeData(tsIndex));
     Serial.println(" - items Stored (sorted)");
   }
 }
@@ -1358,11 +1373,10 @@ bool getStoredTimeData(int tsIndex) {
   mbed::KVStore::info_t info;
   if (eeprom.get_info(TIME_STORE_KEY[tsIndex], &info) != MBED_ERROR_ITEM_NOT_FOUND) {
     eeprom.get(TIME_STORE_KEY[tsIndex], timeStore[tsIndex].list, sizeof(timeStore[tsIndex].list));
-    countTimeData(tsIndex);
     if (Serial) {
       Serial.print(TIME_STORE_KEY[tsIndex]);
       Serial.print(" ");
-      Serial.print(timeStore[tsIndex].count);
+      Serial.print(countTimeData(tsIndex));
       Serial.println(" - items Loaded");
     }
     return true;
@@ -1371,7 +1385,6 @@ bool getStoredTimeData(int tsIndex) {
       Serial.print(TIME_STORE_KEY[tsIndex]);
       Serial.println(" - Data Not Found");
     }
-    countTimeData(tsIndex);
     return false;
   }
 }
