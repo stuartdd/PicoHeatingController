@@ -7,14 +7,14 @@ use std::env;
 use ureq;
 
 const MINS_1_DAY: u32 = 1440;
-const HR:u32 = 60;
+const HR: u32 = 60;
 const START_DAY: u32 = 0;
 const DAY_COUNT: u32 = 7;
 const MAX_VALUES: u32 = 56;
 const ORD_OF_ZERO: u32 = 48;
 
 fn main() {
-    let args: Vec<String> = env::args().collect(); 
+    let args: Vec<String> = env::args().collect();
     let mut times: Vec<u32> = Vec::with_capacity(10);
     let mut file_name: &str = "";
     let mut host_string: &str = "http://192.168.1.177";
@@ -22,14 +22,14 @@ fn main() {
     for index in 1..args.len() {
         if args[index].starts_with("test:") {
             test_mode = true;
-        } 
+        }
         if !test_mode {
             if args[index].starts_with("file:") {
-                file_name = &args[index][5..];  
-                println!("Data Gen: Output file: {}",file_name);
+                file_name = &args[index][5..];
+                println!("Data Gen: Output file: {}", file_name);
             } else {
                 times.push(parse_time_to_mins(&args[index]));
-            }    
+            }
         } else {
             if args[index].starts_with("host:") {
                 host_string = &args[index][5..];
@@ -37,10 +37,20 @@ fn main() {
         }
     }
     if test_mode {
-        
-        let body: String = do_get(host_string, "HW/state").unwrap();
-        print!("Body:{} ",body);
-
+        let result = do_get(host_string, "HW/state");
+        match result {
+            Ok(resp) => {
+                println!("Response {:?}", resp);
+            }
+            Err(e) => match e {
+                ureq::Error::Transport(t) => {
+                    panic!("{:?}", t);
+                }
+                ureq::Error::Status(i, s) => {
+                    println!("Status {} {:?}", i, s);
+                }
+            },
+        }
     } else {
         if file_name == "" {
             panic!("file:<filename> argument was not specified");
@@ -50,22 +60,22 @@ fn main() {
         }
         print!("Input Times: {} values [", times.len());
         for ti in times.iter() {
-            print!("{} ",ti);
+            print!("{} ", ti);
         }
         println!("]");
-        create_values(times, file_name);    
+        create_values(times, file_name);
     }
 }
 
 fn do_get(host: &str, path: &str) -> Result<String, ureq::Error> {
-    let full_url: String = format!("{}/{}",host, path);
-    println!("Testing url:{}",full_url);
+    let full_url: String = format!("{}/{}", host, path);
+    println!("Testing url:{}", full_url);
     let res: String = ureq::get(full_url.as_str())
-    .set("Content-Type", "application/json")
-    .set("Client", "data-gen.rs")
-    .timeout(Duration::from_secs(5))
-    .call()?
-    .into_string()?;
+        .set("Content-Type", "application/json")
+        .set("Client", "data-gen.rs")
+        .timeout(Duration::from_secs(5))
+        .call()?
+        .into_string()?;
     Ok(res)
 }
 
@@ -84,23 +94,23 @@ fn parse_time_to_mins(s: &str) -> u32 {
                     m = (m * 10) + ((c as u32) - ORD_OF_ZERO);
                 }
             } else {
-                panic!("Invalid character: '{}' in Parameter: '{}'",c,s);
-            }    
+                panic!("Invalid character: '{}' in Parameter: '{}'", c, s);
+            }
         }
     }
     if h > 23 {
-        panic!("Hour is > 23: Parameter: '{}'",s);
+        panic!("Hour is > 23: Parameter: '{}'", s);
     }
     if m > 59 {
-        panic!("Minute is > 59: Parameter: '{}'",s);
+        panic!("Minute is > 59: Parameter: '{}'", s);
     }
-    println!("Param {} --> {}:{} ({}) mins",s,h,m, (h * HR) + m);
-    return (h * HR) + m; 
+    println!("Param {} --> {}:{} ({}) mins", s, h, m, (h * HR) + m);
+    return (h * HR) + m;
 }
 
-fn create_values(day_values: Vec<u32>, filename: &str, ) {
+fn create_values(day_values: Vec<u32>, filename: &str) {
     let mut out_str = String::with_capacity(50);
-    let mut count:u32  = 0;
+    let mut count: u32 = 0;
     out_str.push_str("[");
     for day in START_DAY..DAY_COUNT {
         for hr in day_values.iter() {
@@ -108,11 +118,14 @@ fn create_values(day_values: Vec<u32>, filename: &str, ) {
             out_str.push_str(format!("{},", b).as_str());
             count = count + 1;
             if count > MAX_VALUES {
-                panic!("Too Many values. Count is {}. Max is {}. File is {}" ,count,MAX_VALUES, filename);
+                panic!(
+                    "Too Many values. Count is {}. Max is {}. File is {}",
+                    count, MAX_VALUES, filename
+                );
             }
         }
-    } 
-    out_str.truncate(out_str.len()-1);
+    }
+    out_str.truncate(out_str.len() - 1);
     out_str.push_str("]");
     write_file(filename, out_str, count);
 }
@@ -125,5 +138,5 @@ fn write_file(filename: &str, out_str: String, count: u32) {
         Ok(file) => file,
     };
     file.write(out_str.as_bytes()).expect("Failed to write");
-    println!("{} --> {} values {}", path.display(),count, out_str);
+    println!("{} --> {} values {}", path.display(), count, out_str);
 }
