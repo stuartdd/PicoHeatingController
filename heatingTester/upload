@@ -1,0 +1,17 @@
+#!/bin/bash
+
+go build
+export MF=MyFile
+rm $MF
+./heatingTester host:http://192.168.1.177 get:HW/state
+./heatingTester host:http://192.168.1.177 post:CH/schedule 20:00 22:30
+#./heatingTester host:http://192.168.1.177 get:CH/state
+echo 'Return code:'$?
+if test -f "$MF"; then
+    echo $MF Content:
+    echo '-----------------------------------------------------'
+    cat $MF
+    echo
+    echo '-----------------------------------------------------'
+fi
+

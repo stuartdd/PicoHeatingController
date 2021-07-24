@@ -67,11 +67,11 @@
 #define MS_24_HOUR 86400000
 #define MS_1_HOUR 360000
 #define MS_1_SEC 1000
-#define SLEEP_TIMER_PERIOD 60000
+#define SLEEP_TIMER_PERIOD 3600000
 #define LED_TIMER_PERIOD 200
 #define HALT_TIMER_PERIOD 5000
 #define BUTTON_SCAN_TIMER_PERIOD 100
-#define STATUS_SCREEN_TIMEOUT_PERIOD 10000
+#define STATUS_SCREEN_TIMEOUT_PERIOD 60000
 #define SCR_SAV_TIMER_PERIOD 200
 #define WATCHDOG_TIMEOUT 30000
 
@@ -100,7 +100,6 @@
 // These are the integer minute values for the weeks schedule.
 // They are stored in EEPROM and in memory in the TimeStoreStruct.
 #define TIME_STORE_SIZE 56
-#define TIME_STORE_UNSET 65535
 #define TIME_STORE_COUNT 2
 
 // Request tyoes. Detirmined when the request header is read from the network.
@@ -111,7 +110,7 @@ REQ_TYPE requestType = RT_NOT_FOUND;
 
 // The various screens
 enum SCREEN_MODE {
-  SM_STATUS, SM_SUMMARY, SM_CH1, SM_CH2, SM_OFF
+  SM_STATUS, SM_SUMMARY, SM_CH1, SM_CH2, SM_TEMP, SM_OFF
 };
 SCREEN_MODE screenMode = SM_SUMMARY;
 SCREEN_MODE restoreScreenMode = SM_SUMMARY; // The screen mode when we wake up from screen saver
@@ -161,14 +160,16 @@ const PROGMEM char IP_ADDR_STORE_KEY[STORE_KEY_LEN] = "ipAddrStore";
 const PROGMEM unsigned int LOCAL_PORT = 8888;
 const PROGMEM int timeZone = 0;
 
+const PROGMEM uint16_t TIME_STORE_UNSET = 30000;
+
 struct TimeStoreStruct {
   int index;
   uint16_t list[TIME_STORE_SIZE];
-  uint16_t boostMinutes = TIME_STORE_UNSET;
-  CHANNEL_MODE mode = CM_SCHEDULED;
   bool stateOn = false;
   char onOff[ON_OFF_BUFF_LEN];
   char onOffTime[ON_OFF_TIME_BUFF_LEN];
+  CHANNEL_MODE mode = CM_SCHEDULED;
+  uint16_t boostMinutes = TIME_STORE_UNSET;
 };
 
 // Initialize the Ethernet server library
@@ -229,6 +230,9 @@ unsigned long daylightSavingAdjust = 0;
 unsigned int minuteZero = 0;
 unsigned int ledCounter = 0;
 unsigned int ledDutyCycle = 5;
+
+int volts0 = 0;
+int volts0C = 0;
 
 int scrSavX = 0;
 int scrSavXDir = 3;
@@ -329,7 +333,7 @@ void setup() {
   setSyncProvider(getNtpTime);
   haltTimerEvent = 0;
   statusScreenTimeoutEvent = 0;
-  setScreenMode(SM_STATUS);
+  setScreenMode(SM_TEMP);
 
   thread.start(displayThread);
   digitalWrite(LED_BUILTIN, LOW);
@@ -381,6 +385,9 @@ static void displayThread() {
               setScreenMode(SM_CH2);
               break;
             case SM_CH2:
+              setScreenMode(SM_TEMP);
+              break;
+            case SM_TEMP:
               setScreenMode(SM_STATUS);
               break;
           }
@@ -396,7 +403,10 @@ static void displayThread() {
       for (int i = 0; i < TIME_STORE_COUNT; i++) {
         getNextActionTime(timeStore[i]);
       }
-
+      
+      volts0 = volts0 + readVoltageMV(26);
+      volts0C++;
+      
       if (screenMode != SM_OFF) {
         switch (screenMode) {
           case SM_STATUS:
@@ -410,6 +420,9 @@ static void displayThread() {
             break;
           case SM_CH2:
             channelScreen(TIME_STORE_C2_INDEX);
+            break;
+          case SM_TEMP:
+            tempreturesScreen();
             break;
         }
         displayTime();
@@ -513,7 +526,7 @@ void sendGetResponse(EthernetClient client) {
     return;
   }
   if (strcmp("index", pathItemBuff) == 0) {
-    sendIndexResponse(client);
+    sendIndexPageResponse(client);
     return;
   }
   //
@@ -525,25 +538,34 @@ void sendGetResponse(EthernetClient client) {
   if (tsIndex < 0) {
     sendErrorResponse(client, 416, RESP_HTTP_416, "Invalid Device");
   } else {
+    setScreenModeWithIndex(tsIndex);
     at = nextPathItemInPath(at);
     if (strcmp("boost", pathItemBuff) == 0) {
       setChannelBoost(tsIndex, at);
-      setScreenModeWithIndex(tsIndex);
-      initRespJson(tsIndex, true);
+      initStateRespJson(tsIndex);
       sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
     } else {
-      if (strcmp("off", pathItemBuff) == 0) {
-        setChannelOff(tsIndex);
-        setScreenModeWithIndex(tsIndex);
-        initRespJson(tsIndex, true);
+      if (strcmp("on", pathItemBuff) == 0) {
+        setChannelOn(tsIndex);
+        initStateRespJson(tsIndex);
         sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
       } else {
-        if (strcmp("state", pathItemBuff) == 0) {
-          setScreenModeWithIndex(tsIndex);
-          initRespJson(tsIndex, true);
+        if (strcmp("off", pathItemBuff) == 0) {
+          setChannelOff(tsIndex);
+          initStateRespJson(tsIndex);
           sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
         } else {
-          sendErrorResponse(client, 404, RESP_HTTP_404, "Unknown path");
+          if (strcmp("state", pathItemBuff) == 0) {
+            initStateRespJson(tsIndex);
+            sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
+          } else {
+            if (strcmp("schedule", pathItemBuff) == 0) {
+              initScheduleRespJson(tsIndex);
+              sendResponse(client, 200, RESP_HTTP_200, RESP_APP_JSON);
+            } else {
+              sendErrorResponse(client, 404, RESP_HTTP_404, "Unknown path");
+            }
+          }
         }
       }
     }
@@ -578,6 +600,9 @@ void sendPostResponse(EthernetClient client) {
   } else {
     at = nextPathItemInPath(at);
     if (strcmp("schedule", pathItemBuff) == 0) {
+      if (Serial) {
+        Serial.println("*** SCHEDULE ***");
+      }
       readTimeDataFromPostData(tsIndex);
       initRespJsonStart(tsIndex, false);
       appendQuoteEnt("schedule", ':');
@@ -596,9 +621,18 @@ void setChannelOff(int tsIndex) {
   getNextActionTime(timeStore[tsIndex]);
 }
 
+void setChannelOn(int tsIndex) {
+  timeStore[tsIndex].mode = CM_SCHEDULED;
+  timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
+  getNextActionTime(timeStore[tsIndex]);
+}
+
 void setChannelBoost(int tsIndex, int nextItem) {
+  if (Serial) {
+    Serial.println("*** BOOST ***");
+  }
   int at = nextPathItemInPath(nextItem);
-  int mins = atoi(pathItemBuff);
+  uint16_t mins = atoi(pathItemBuff);
   if (mins == 0) {
     timeStore[tsIndex].boostMinutes = TIME_STORE_UNSET;
     timeStore[tsIndex].mode = CM_SCHEDULED;
@@ -698,7 +732,18 @@ void initRespJsonStart(int tsIndex, bool closeJson) {
   appendQuoteEnt(TIME_STORE_TAG[tsIndex], closeJson ? '}' : ',');
 }
 
-void initRespJson(int tsIndex, bool closeJson) {
+void initScheduleRespJson(int tsIndex) {
+  initRespJsonStart(tsIndex, false);
+  appendQuoteEnt("schd", ':');
+  appendRespChar('[');
+  int c = countTimeData(tsIndex);
+  for (int i = 0; i < c; i++) {
+    appendInt(timeStore[tsIndex].list[i], (i < (c - 1) ? ',' : ']'));
+  }
+  appendRespChar('}');
+}
+
+void initStateRespJson(int tsIndex) {
   initRespJsonStart(tsIndex, false);
   appendQuoteEnt("mode", ':');
   switch (timeStore[tsIndex].mode) {
@@ -722,7 +767,7 @@ void initRespJson(int tsIndex, bool closeJson) {
   appendQuoteEnt(timeStore[tsIndex].onOffTime, ',');
 
   appendQuoteEnt("time", ':');
-  appendQuoteEnt(timeBuff, closeJson ? '}' : ',');
+  appendQuoteEnt(timeBuff, '}');
 }
 
 void sendErrorResponse(EthernetClient client, const int code, const char* msg, const char* reason) {
@@ -741,7 +786,7 @@ void sendErrorResponse(EthernetClient client, const int code, const char* msg, c
   sendResponse(client, code, msg, RESP_APP_JSON);
 }
 
-void sendIndexResponse(EthernetClient client) {
+void sendIndexPageResponse(EthernetClient client) {
   client.print(RESP_HTTP_V);
   client.print(200);
   client.print(' ');
@@ -919,6 +964,34 @@ void drawIcon(int x, int y, int bw, Icon ic, bool invert, bool off) {
     }
   }
 }
+void tempreturesScreen() {
+  display.setTextSize(2);
+  display.setTextColor(1);
+  display.fillRect(0, TITLE_HEIGHT, SCREEN_WIDTH, MAIN_HEIGHT , 0);
+  display.setCursor(2, LINE_1X_Y);
+  display.print("MV ");
+  display.print(readVoltageMV(26));
+
+  display.setCursor(2, LINE_2X_Y);
+  display.print("TC ");
+  display.print(readTempreture(26));
+  display.setTextSize(1);
+}
+
+
+
+double readTempreture(int pin) {
+  double acc = (volts0/volts0C);
+  if (volts0C >= 10) {
+    volts0C = 5;
+    volts0 = acc * 5;
+  }
+  return (acc - 400) / 19.5;
+}
+
+int readVoltageMV(int pin) {
+  return map(analogRead(pin), 0, 1023, -10, 3210);
+}
 
 void summaryScreen() {
   display.setTextSize(2);
@@ -960,7 +1033,7 @@ void channelScreen(int tsIndex) {
   bool isOff = timeStore[tsIndex].mode == CM_OFF;
   drawIcon( 0, LINE_1X_Y, 4, TIME_STORE_ICON[tsIndex], false, isOff);
   if (timeStore[tsIndex].stateOn) {
-    if (timeStore[tsIndex].mode = CM_BOOST) {
+    if (timeStore[tsIndex].mode == CM_BOOST) {
       drawIcon( SCREEN_HALF, LINE_1X_Y, 4, iconBoost, true, isOff);
     } else {
       drawIcon( SCREEN_HALF, LINE_1X_Y, 4, iconOn, true, isOff);
@@ -1232,6 +1305,22 @@ void appendQuoteEnt(const char* str, const char sep) {
   appendRespChar('"');
   appendResp(str);
   appendRespChar('"');
+  if (sep != ' ') {
+    appendRespChar(sep);
+  }
+}
+
+void appendEnt(const char* str, const char sep) {
+  appendResp(str);
+  if (sep != ' ') {
+    appendRespChar(sep);
+  }
+}
+
+void appendInt(int num, const char sep) {
+  char buffer [10];
+  itoa(num, buffer, 10);
+  appendResp(buffer);
   if (sep != ' ') {
     appendRespChar(sep);
   }

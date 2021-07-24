@@ -17,7 +17,7 @@ Pico Heating controller using arduino C
 
 ## API
 
-POST: /ip Override the IP address.  
+POST: /ip Override the IP address.
 
 ### POST --> 'ip'
 
